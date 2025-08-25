@@ -1,0 +1,10 @@
+## This is not just for editors, shfmt also reads this
+[*.sh]
+indent_style = space
+indent_size = 4
+shell_variant = bash
+binary_next_line = false
+switch_case_indent = true
+space_redirects = true
+keep_padding = true
+function_next_line = false
