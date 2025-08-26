@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from enum import StrEnum, auto
 from copy import deepcopy
+import textwrap
 
 
 class SourceCode:
@@ -103,7 +104,7 @@ class Token:
         return self._source_code
 
     def __str__(self) -> str:
-        return f"Token{{token_type={self._token_type}, location={self._source_code_location}}}"
+        return f"Token{{literal={self.literal}, token_type={self._token_type}, location={self._source_code_location}}}"
 
 
 def is_part_of_identifier(x: str) -> bool:
@@ -128,6 +129,23 @@ def group_characters(source_code: SourceCode) -> list[Token] | InvalidSourceCode
         location.end_index += 1
 
         match source_code.content[location.start_index: location.end_index]:
+            case '-':
+                # peek all digits
+                peek_index = 0
+                while location.end_index + peek_index < len(source_code.content):
+                    if not source_code.content[location.end_index + peek_index].isdigit():
+                        break
+                    peek_index += 1
+
+                location.end_index += peek_index
+                tokens.append(
+                    Token(
+                        token_type=TokenType.integer,
+                        source_code=source_code,
+                        source_code_location=deepcopy(location),
+                    )
+                )
+                location.advance()
             case x if x.isdigit():
                 # peek all digits
                 peek_index = 0
@@ -304,7 +322,7 @@ def group_characters(source_code: SourceCode) -> list[Token] | InvalidSourceCode
     return tokens
 
 
-class NodeType(StrEnum):
+class AbstractSyntaxTreeNodeType(StrEnum):
     expr = auto()
 
     apply = auto()
@@ -315,30 +333,30 @@ class NodeType(StrEnum):
 
     lazy_record = auto()  # kids: list[pairs]
     eager_record = auto()  # kids: list[pairs]
-    pairs = auto()  # kids: list[pair]
+    pair = auto()  # kids: list[pair]
 
     # syntactic elements
-    equal_sign = auto()
-    comma = auto()
-    dot = auto()
+    equal_sign = "="
+    comma = ","
+    dot = "."
 
     # parenthesis
-    left_parenthesis = auto()
-    right_parenthesis = auto()
-    left_bracket = auto()
-    right_bracket = auto()
-    left_brace = auto()
-    right_brace = auto()
+    left_parenthesis = "("
+    right_parenthesis = ")"
+    left_bracket = "["
+    right_bracket = "]"
+    left_brace = "{"
+    right_brace = "}"
 
 
-class Node:
-    def __init__(self, node_type: NodeType, nodes: list["Node"] | None = None, token: Token | None = None) -> None:
+class AbstractSyntaxTreeNode:
+    def __init__(self, node_type: AbstractSyntaxTreeNodeType, nodes: list["AbstractSyntaxTreeNode"] | None = None, token: Token | None = None) -> None:
         self._node_type = node_type
         self._token = token
         self.nodes = nodes or []
 
     @property
-    def node_type(self) -> NodeType:
+    def node_type(self) -> AbstractSyntaxTreeNodeType:
         return self._node_type
 
     @property
@@ -346,58 +364,135 @@ class Node:
         return self._token
 
     @property
-    def nodes(self) -> list["Node"]:
+    def nodes(self) -> list["AbstractSyntaxTreeNode"]:
         return self._nodes
 
     @nodes.setter
-    def nodes(self, nodes: list["Node"]) -> None:
+    def nodes(self, nodes: list["AbstractSyntaxTreeNode"]) -> None:
         self._nodes = nodes
 
     def __str__(self) -> str:
         string = ""
-        string += f"{self.node_type} = {{\n"
+
         if self._token:
-            string += f"\t{self._token}\n"
-        string += "}\n"
+            string += f"{self.node_type} = {str(self._token)}"
+
+        else:
+            tmp_string = ""
+            if self._nodes:
+                for node in self._nodes:
+                    tmp_string += f"{textwrap.indent(str(node), '  ')}\n"
+            string += f"{self.node_type} = {{\n{tmp_string}}}"
+        return string
+
+    def pretty_string(self) -> str:
+        string = ""
+
+        if self.token:
+            string += f"{str(self.token.literal)}"
+
+        else:
+            match self.node_type:
+                case AbstractSyntaxTreeNodeType.expr:
+                    string += f"({self.nodes[0].pretty_string()})"
+                case AbstractSyntaxTreeNodeType.function:
+                    string += f"{self.nodes[0].pretty_string()} . {self.nodes[1].pretty_string()}"
+                case AbstractSyntaxTreeNodeType.apply:
+                    string += f"{' '.join([node.pretty_string() for node in self.nodes])}"
+                case AbstractSyntaxTreeNodeType.integer:
+                    string += f"{self.token.literal}"
+                case AbstractSyntaxTreeNodeType.name:
+                    string += f"{self.token.literal}"
+                case AbstractSyntaxTreeNodeType.lazy_record:
+                    string += f"{{{', '.join([node.pretty_string() for node in self.nodes])}}}"
+                case AbstractSyntaxTreeNodeType.eager_record:
+                    string += f"[{', '.join([node.pretty_string() for node in self.nodes])}]"
+                case AbstractSyntaxTreeNodeType.pair:
+                    string += f"{self.nodes[0].pretty_string()} = {self.nodes[1].pretty_string()}"
         return string
 
 
 class ParseError(Exception):
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, nodes: AbstractSyntaxTreeNode | None = None, index: int | None = None, recoverable: bool = True, at_end=False) -> None:
         super().__init__(message)
+        location = ""
+        if nodes and index:
+            self._message = f"{print_source_code_location(nodes, index)} - {message}"
+        else:
+            self._message = f"{message}"
+        self._recoverable = recoverable
+        self._at_end = at_end
+
+    @property
+    def recoverable(self) -> bool:
+        return self._recoverable
+
+    @property
+    def at_end(self) -> bool:
+        return self._at_end
+
+    def __str__(self) -> str:
+        return ("recoverable" if self.recoverable else "unrecoverable") + f": {self._message}"
 
 
-def peek_node(nodes: list[Node], index: int) -> Node | None:
+def peek_node(nodes: list[AbstractSyntaxTreeNode], index: int) -> AbstractSyntaxTreeNode | None:
     return nodes[index] if index < len(nodes) else None
 
 
-def advance_node(nodes: list[Node], index: int) -> tuple[Node, int]:
+def print_source_code_location(nodes: list[AbstractSyntaxTreeNode], index: int) -> str:
+    if index < 0:
+        index = 0
+    elif index >= len(nodes):
+        index = len(nodes) - 1
+
+    return f"{nodes[index].token.source_code.path}:{nodes[index].token.source_code_location}"
+
+
+def advance_node(nodes: list[AbstractSyntaxTreeNode], index: int) -> tuple[AbstractSyntaxTreeNode | ParseError, int]:
     node = peek_node(nodes, index)
     if node is None:
-        raise ParseError("unexpected end of input")
+        error = ParseError(
+            f"unexpected end of input\nTODO: snippet",
+            nodes=nodes,
+            index=index,
+            recoverable=False,
+            at_end=True,
+        )
+        return error, index
 
     return node, index + 1
 
 
-def match_node(nodes: list[Node], index: int, node_type: NodeType) -> tuple[Node, int]:
+def match_node(nodes: list[AbstractSyntaxTreeNode], index: int, node_types: list[AbstractSyntaxTreeNodeType]) -> tuple[AbstractSyntaxTreeNode | None, int]:
     node = peek_node(nodes, index)
 
     if node is None:
         return None, index
-
-    if node.node_type not in node_type:
-        return None, index
-
-    return node, index + 1
-
-
-def expect_node(nodes: list[Node], index: int, *node_types: NodeType, context: str | None = None) -> tuple[Node, int]:
-    node = peek_node(nodes, index)
-    if node is None:
-        raise ParseError(f"expected {', '.join(node_types)}, found <end of input>")
 
     if node.node_type not in node_types:
-        raise ParseError(f"expected {', '.join(node_types)} found {node.node_type}")
+        return None, index
+
+    return node, index + 1
+
+
+def expect_node(nodes: list[AbstractSyntaxTreeNode], index: int, node_types: list[AbstractSyntaxTreeNodeType]) -> tuple[AbstractSyntaxTreeNode | ParseError, int]:
+    node = peek_node(nodes, index)
+    if node is None:
+        return ParseError(
+            f"expected {', '.join(f"'{node_type}'" for node_type in node_types)}, found <end of input>\nTODO: snippet",
+            nodes=nodes,
+            index=index,
+            recoverable=False,
+            at_end=True,
+        ), index
+
+    if node.node_type not in node_types:
+        error = ParseError(
+            f"expected {', '.join(f"'{node_type}'" for node_type in node_types)} found {node.token.token_type}: {node.token.literal}\nTODO: snippet",
+            nodes=nodes,
+            index=index,
+        )
+        return error, index
 
     return node, index + 1
 
@@ -406,172 +501,346 @@ class Context:
     level: int
 
 
-def parse_function(nodes: list[Node], index: int = 0, context: Context = None) -> tuple[Node, int]:
-    print(" " * context.level + "function", index)
+def parse_function(nodes: list[AbstractSyntaxTreeNode], index: int = 0) -> tuple[AbstractSyntaxTreeNode, int]:
+    start_index = index
+
+    first: AbstractSyntaxTreeNode = peek_node(nodes, index)
+    second: AbstractSyntaxTreeNode = peek_node(nodes, index + 1)
+
+    if not first or first.node_type != AbstractSyntaxTreeNodeType.name:
+        error = ParseError(
+            message=f"expected name in function: <name> . <expr>\nTODO: snippet",
+            nodes=nodes,
+            index=index,
+            recoverable=True
+        )
+        return error, start_index
+
+    if not second or second.node_type != AbstractSyntaxTreeNodeType.dot:
+        error = ParseError(
+            message=f"expected dot in function: <name> . <expr>\nTODO: snippet",
+            nodes=nodes,
+            index=index,
+            recoverable=True,
+        )
+        return error, start_index
+
+    name, index = advance_node(nodes, index)
+    dot, index = advance_node(nodes, index)
+    expr, index = parse_expr(nodes, index)
+
+    if type(expr) is ParseError:
+        if expr.recoverable:
+            error = ParseError(
+                message=f"expected expr in function: <name> . <expr>\nTODO: snippet",
+                nodes=nodes,
+                index=index,
+                recoverable=False,
+            )
+            return error, start_index
+        else:
+            return expr, start_index
+
+    return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.function, nodes=[name, expr]), index
 
 
-def parse_expr(nodes: list[Node], index: int = 0, context: Context = None) -> tuple[Node, int]:
-    print(" " * context.level + "expr", index)
-    context.level += 1
-    first: Node = peek_node(nodes, index)
-    second: Node = peek_node(nodes, index + 1)
+def parse_expr(nodes: list[AbstractSyntaxTreeNode], index: int = 0) -> tuple[AbstractSyntaxTreeNode | ParseError, int]:
+    start_index = index
 
-    if first and first.node_type == NodeType.name and second and second.node_type == NodeType.dot:
-        name, index = advance_node(nodes, index)
-        dot, index = advance_node(nodes, index)
-        expr, index = parse_expr(nodes, index, context=deepcopy(context))
-        return Node(NodeType.expr, nodes=[name, dot, expr]), index
+    function, index = parse_function(nodes, index)
 
-    apply, index = parse_apply(nodes, index, context=deepcopy(context))
-    return Node(NodeType.expr, nodes=[apply]), index
+    if type(function) is AbstractSyntaxTreeNode:
+        return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.expr, nodes=[function]), index
+
+    if type(function) is ParseError and not function.recoverable:
+        return function, start_index
+
+    apply, index = parse_apply(nodes, index)
+
+    if type(apply) is ParseError:
+        return apply, start_index
+
+    return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.expr, nodes=[apply]), index
 
 
-def parse_apply(nodes: list[Node], index: int = 0, context: Context = None) -> tuple[Node, int]:
-    print(" " * context.level + "apply", index)
-    context.level += 1
-    basics: list[Node] = []
+def parse_apply(nodes: list[AbstractSyntaxTreeNode], index: int = 0) -> tuple[AbstractSyntaxTreeNode | ParseError, int]:
+    start_index = index
 
-    first, index = parse_basic(nodes, index, context=deepcopy(context))
+    basics: list[AbstractSyntaxTreeNode] = []
+
+    first, index = parse_basic(nodes, index)
+
+    if type(first) is ParseError:
+        return first, start_index
+
     basics.append(first)
 
     while True:
-        part_of_basic, _ = match_node(
-            nodes, index, node_type=[NodeType.integer, NodeType.name, NodeType.left_parenthesis, NodeType.left_bracket, NodeType.left_brace]
-        )
-        if not part_of_basic:
-            break
-        next_basic, index = parse_basic(nodes, index, context=deepcopy(context))
+        next_basic, index_2 = parse_basic(nodes, index)
+
+        if type(next_basic) is ParseError:
+            if not next_basic.recoverable:
+                return next_basic, start_index
+            else:
+                break
+
+        index = index_2
+
         basics.append(next_basic)
 
-    return Node(NodeType.apply, nodes=basics), index
+    return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.apply, nodes=basics), index
 
 
-def parse_basic(nodes: list[Node], index: int = 0, context: Context = None) -> tuple[Node, int]:
-    print(" " * context.level + "basic", index)
-    context.level += 1
+def parse_basic(nodes: list[AbstractSyntaxTreeNode], index: int = 0) -> tuple[AbstractSyntaxTreeNode | ParseError, int]:
+    start_index = index
+
     node = peek_node(nodes, index)
     if node is None:
-        raise ParseError("expected (int/name/(...)/{...}/[...]), found <end of input>")
+        error = ParseError(
+            message=f"expected (int/name/(...)/{...}/[...]), found <end of input>\nTODO: snippet",
+            nodes=nodes,
+            index=index,
+            recoverable=True,
+            at_end=True,
+        )
+        return error, start_index
 
-    if node.node_type == NodeType.integer:
+    if node.node_type == AbstractSyntaxTreeNodeType.integer:
         integer, index = advance_node(nodes, index)
 
-        return Node(NodeType.basic, nodes=[integer]), index
+        return integer, index
 
-    if node.node_type == NodeType.name:
+    if node.node_type == AbstractSyntaxTreeNodeType.name:
         name, index = advance_node(nodes, index)
 
-        return Node(NodeType.basic, nodes=[name]), index
+        return name, index
 
-    if node.node_type == NodeType.left_parenthesis:
+    if node.node_type == AbstractSyntaxTreeNodeType.left_parenthesis:
         left_parenthesis, index = advance_node(nodes, index)
-        expr, index = parse_expr(nodes, index, context=deepcopy(context))
-        right_parenthesis, index = expect_node(nodes, index, NodeType.right_parenthesis, context=")")
 
-        return Node(NodeType.basic, nodes=[left_parenthesis, expr, right_parenthesis]), index
+        next_node = peek_node(nodes, index)
+        if not next_node:
+            error = ParseError(
+                f"expected apply or function, found <end of input>\nTODO: snippet",
+                nodes=nodes,
+                index=index,
+                recoverable=False,
+            )
+            return error, start_index
 
-    if node.node_type == NodeType.left_brace:
+        if next_node.node_type == AbstractSyntaxTreeNodeType.right_parenthesis:
+            error = ParseError(
+                f"expected  apply or function, found {next_node.node_type}\nTODO: snippet",
+                nodes=nodes,
+                index=index,
+                recoverable=False,
+            )
+            return error, start_index
+
+        expr, index = parse_expr(nodes, index)
+
+        if type(expr) is ParseError:
+            if expr.at_end and expr.recoverable:
+                error = ParseError(
+                    f"expected ')', found <end of input>",
+                    nodes=nodes,
+                    index=index,
+                    recoverable=False,
+                )
+                return error, start_index
+            return expr, start_index
+
+        right_parenthesis, index = expect_node(nodes, index, node_types=[AbstractSyntaxTreeNodeType.right_parenthesis])
+
+        if type(right_parenthesis) is ParseError:
+            return right_parenthesis, start_index
+
+        return expr, index
+
+    if node.node_type == AbstractSyntaxTreeNodeType.left_brace:
         left_brace, index = advance_node(nodes, index)
 
-        pairs: Node | None = None
-        next_node: Node = peek_node(nodes, index)
-        if next_node and next_node.node_type != NodeType.right_brace:
-            pairs, index = parse_pairs(nodes, index, context=deepcopy(context))
+        next_node = peek_node(nodes, index)
 
-        right_brace, index = expect_node(nodes, index, NodeType.right_brace, context="}")
+        if not next_node:
+            error = ParseError(
+                f"expected name or '}}', found <end of input>\nTODO: snippet",
+                nodes=nodes,
+                index=index,
+                recoverable=False
+            )
+            return error, start_index
 
-        kids = [left_brace] + ([pairs] if pairs else []) + [right_brace]
+        if next_node.node_type == AbstractSyntaxTreeNodeType.right_brace:
+            next_node, index = advance_node(nodes, index)
 
-        return Node(NodeType.basic, nodes=kids), index
+            return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.lazy_record, nodes=[]), index
 
-    if node.node_type == NodeType.left_bracket:
+        if next_node.node_type != AbstractSyntaxTreeNodeType.name:
+            error = ParseError(
+                f"expected name, found {next_node.node_type}\nTODO: snippet",
+                nodes=nodes,
+                index=index,
+                recoverable=False,
+            )
+            return error, start_index
+
+        pairs, index = parse_pairs(nodes, index)
+
+        if type(pairs) is ParseError:
+            return pairs, start_index
+
+        right_brace, index = expect_node(nodes, index, node_types=[AbstractSyntaxTreeNodeType.right_brace])
+        if type(right_brace) is ParseError:
+            return right_brace, start_index
+
+        return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.lazy_record, nodes=pairs), index
+
+    if node.node_type == AbstractSyntaxTreeNodeType.left_bracket:
         left_bracket, index = advance_node(nodes, index)
 
-        pairs: Node | None = None
-        next_node: Node = peek_node(nodes, index)
-        if next_node and next_node.node_type != NodeType.right_bracket:
-            pairs, index = parse_pairs(nodes, index, context=deepcopy(context))
+        next_node = peek_node(nodes, index)
 
-        right_bracket, index = expect_node(nodes, index, NodeType.right_bracket, context="]")
+        if not next_node:
+            error = ParseError(
+                f"expected name or ']', found <end of input>\nTODO: snippet",
+                nodes=nodes,
+                index=index,
+                recoverable=False,
+            )
+            return error, start_index
 
-        kids = [left_bracket] + ([pairs] if pairs else []) + [right_bracket]
+        if next_node.node_type == AbstractSyntaxTreeNodeType.right_bracket:
+            next_node, index = advance_node(nodes, index)
 
-        return Node(NodeType.basic, nodes=kids), index
+            return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.eager_record, nodes=[]), index
 
-    raise ParseError(f"expected (int/name/(...)/{{...}}/[...]), found {node.node_type}")
+        if next_node.node_type != AbstractSyntaxTreeNodeType.name:
+            error = ParseError(
+                f"expected name, found {next_node.node_type}\nTODO: snippet",
+                nodes=nodes,
+                index=index,
+                recoverable=False,
+            )
+            return error, start_index
+
+        pairs, index = parse_pairs(nodes, index)
+
+        if type(pairs) is ParseError:
+            return pairs, start_index
+
+        right_bracket, index = expect_node(nodes, index, node_types=[AbstractSyntaxTreeNodeType.right_bracket])
+        if type(right_bracket) is ParseError:
+            return right_bracket, start_index
+
+        return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.lazy_record, nodes=pairs), index
+
+    if node.node_type in [AbstractSyntaxTreeNodeType.dot, AbstractSyntaxTreeNodeType.equal_sign]:
+        error = ParseError(
+            f"expected (int/name/(...)/{{...}}/[...]), found {node.node_type}\nTODO: snippet",
+            nodes=nodes,
+            index=index,
+            recoverable=False,
+        )
+        return error, start_index
+
+    error = ParseError(
+        f"expected (int/name/(...)/{{...}}/[...]), found {node.node_type}\nTODO: snippet",
+        nodes=nodes,
+        index=index,
+    )
+    return error, start_index
 
 
-def parse_pairs(nodes: list[Node], index: int = 0, context: Context = None) -> tuple[Node, int]:
-    print(" " * context.level + "pairs", index)
-    context.level += 1
-    pairs: list[Node] = []
+def parse_pairs(nodes: list[AbstractSyntaxTreeNode], index: int = 0) -> tuple[list[AbstractSyntaxTreeNode] | ParseError, int]:
+    start_index = index
 
-    def parse_one_pair(nodes: list[Node], index: int, context: Context = None) -> tuple[Node, int]:
-        print(" " * context.level + "pair", index)
-        context.level += 1
-        name, index = expect_node(nodes, index, NodeType.name)
+    pairs: list[AbstractSyntaxTreeNode] = []
 
-        equal_sign, index = expect_node(nodes, index, NodeType.equal_sign)
+    def parse_one_pair(nodes: list[AbstractSyntaxTreeNode], index: int, context: Context = None) -> tuple[AbstractSyntaxTreeNode | ParseError, int]:
+        start_index = index
 
-        value, index = parse_expr(nodes, index, context=deepcopy(context))
+        name, index = expect_node(nodes, index, node_types=[AbstractSyntaxTreeNodeType.name])
 
-        return Node(NodeType.pair, nodes=[name, equal_sign, value]), index
+        if type(name) is ParseError:
+            return name, start_index
 
-    first, index = parse_one_pair(nodes, index, context=deepcopy(context))
+        equal_sign, index = expect_node(nodes, index, node_types=[AbstractSyntaxTreeNodeType.equal_sign])
+
+        if type(equal_sign) is ParseError:
+            return equal_sign, start_index
+
+        value, index = parse_expr(nodes, index)
+
+        if type(value) is ParseError:
+            return value, start_index
+
+        return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.pair, nodes=[name, value]), index
+
+    first, index = parse_one_pair(nodes, index)
+
+    if type(first) is ParseError:
+        return first, start_index
+
     pairs.append(first)
 
     while True:
-        comma, index_2 = match_node(nodes, index, NodeType.comma)
+        comma, index_2 = match_node(nodes, index, node_types=[AbstractSyntaxTreeNodeType.comma])
         if not comma:
             break
-        next_pair, index = parse_one_pair(nodes, index_2, context=deepcopy(context))
+
+        next_pair, index = parse_one_pair(nodes, index_2)
+
+        if type(next_pair) is ParseError:
+            return next_pair, start_index
+
         pairs.append(next_pair)
 
-    return Node(NodeType.pairs, nodes=pairs), index
+    return pairs, index
 
 
-def parse(tokens: list[Token]) -> Node:
-    nodes: list[Node] = []
+def parse_tokens(tokens: list[Token]) -> AbstractSyntaxTreeNode | ParseError:
+    nodes: list[AbstractSyntaxTreeNode] = []
 
     for token in tokens:
-        node: Node
+        node: AbstractSyntaxTreeNode
 
         match token.token_type:
             case TokenType.integer:
-                node = Node(NodeType.integer, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.integer, token=token)
             case TokenType.identifier:
-                node = Node(NodeType.name, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
 
             case TokenType.plus:
-                node = Node(NodeType.name, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
             case TokenType.minus:
-                node = Node(NodeType.name, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
             case TokenType.mult:
-                node = Node(NodeType.name, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
             case TokenType.div:
-                node = Node(NodeType.name, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
             case TokenType.cond:
-                node = Node(NodeType.name, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
 
             case TokenType.equal_sign:
-                node = Node(NodeType.equal_sign, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.equal_sign, token=token)
             case TokenType.comma:
-                node = Node(NodeType.comma, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.comma, token=token)
             case TokenType.dot:
-                node = Node(NodeType.dot, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.dot, token=token)
 
             case TokenType.left_parenthesis:
-                node = Node(NodeType.left_parenthesis, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.left_parenthesis, token=token)
             case TokenType.right_parenthesis:
-                node = Node(NodeType.right_parenthesis, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.right_parenthesis, token=token)
             case TokenType.left_bracket:
-                node = Node(NodeType.left_bracket, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.left_bracket, token=token)
             case TokenType.right_bracket:
-                node = Node(NodeType.right_bracket, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.right_bracket, token=token)
             case TokenType.left_brace:
-                node = Node(NodeType.left_brace, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.left_brace, token=token)
             case TokenType.right_brace:
-                node = Node(NodeType.right_brace, token=token)
+                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.right_brace, token=token)
 
             case _:
                 continue
@@ -579,23 +848,23 @@ def parse(tokens: list[Token]) -> Node:
         nodes.append(node)
 
         if not nodes:
-            raise ParseError("empty input")
+            return ParseError("empty input", recoverable=False)
 
-    for node in nodes:
-        print(node.token)
+    abstract_syntax_tree, index = parse_expr(nodes, 0)
 
-    context = Context()
-    context.level = 0
-    ast, index = parse_expr(nodes, 0, context=deepcopy(context))
-
-    print(index)
+    if type(abstract_syntax_tree) is ParseError:
+        return abstract_syntax_tree
 
     if index != len(nodes):
-        extra: Node = nodes[index]
-        extra_token: Token = extra.token
-        raise ParseError(f"{extra_token.source_code.path}:{extra_token.source_code_location} - unexpected token after: {extra.node_type}\nTODO: snippet")
+        error = ParseError(
+            f"unexpected '{nodes[index].node_type}'\nTODO: snippet",
+            nodes=nodes,
+            index=index,
+            recoverable=False,
+        )
+        return error
 
-    return ast
+    return abstract_syntax_tree
 
 
 def main() -> None:
@@ -613,9 +882,13 @@ def main() -> None:
         print(tokens, file=sys.stderr)
         exit(1)
 
-    expression = parse(tokens)
+    abstract_syntax_tree = parse_tokens(tokens)
 
-    print(expression)
+    if type(abstract_syntax_tree) is ParseError:
+        print(abstract_syntax_tree, file=sys.stderr)
+        exit(1)
+
+    print(abstract_syntax_tree)
 
 
 if __name__ == "__main__":
