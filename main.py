@@ -30,13 +30,6 @@ class TokenType(StrEnum):
     integer = auto()  # [0-9]+
     identifier = auto()  # [a-zA-Z]+
 
-    # predefined identifier
-    plus = auto()
-    minus = auto()
-    mult = auto()
-    div = auto()
-    cond = auto()
-
     # syntactic elements
     equal_sign = auto()
     comma = auto()
@@ -174,20 +167,7 @@ def group_characters(source_code: SourceCode) -> list[Token] | InvalidSourceCode
 
                 location.end_index += peek_index
 
-                token_type: TokenType = None
-                match source_code.content[location.start_index: location.end_index]:
-                    case "plus":
-                        token_type = TokenType.plus
-                    case "minus":
-                        token_type = TokenType.minus
-                    case "mult":
-                        token_type = TokenType.mult
-                    case "div":
-                        token_type = TokenType.div
-                    case "cond":
-                        token_type = TokenType.cond
-                    case _:
-                        token_type = TokenType.identifier
+                token_type = TokenType.identifier
 
                 tokens.append(
                     Token(
@@ -809,17 +789,6 @@ def parse_tokens(tokens: list[Token]) -> AbstractSyntaxTreeNode | ParseError:
             case TokenType.integer:
                 node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.integer, token=token)
             case TokenType.identifier:
-                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
-
-            case TokenType.plus:
-                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
-            case TokenType.minus:
-                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
-            case TokenType.mult:
-                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
-            case TokenType.div:
-                node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
-            case TokenType.cond:
                 node = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=token)
 
             case TokenType.equal_sign:
