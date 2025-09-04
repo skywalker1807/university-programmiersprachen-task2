@@ -1,4 +1,6 @@
 #!/usr/bin/python3.12
+from dataclasses import dataclass, field
+from typing import assert_never
 import argparse
 import sys
 from pathlib import Path
@@ -8,18 +10,10 @@ import textwrap
 import json
 
 
+@dataclass(frozen=True)
 class SourceCode:
-    def __init__(self, path: Path, content: str) -> None:
-        self._path = path
-        self._content = content
-
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    @property
-    def content(self) -> str:
-        return self._content
+    path: str
+    content: str
 
 
 def read_source_code(file_path: Path) -> str:
@@ -49,12 +43,12 @@ class TokenType(StrEnum):
     new_line = auto()
 
 
+@dataclass
 class SourceCodeLocation:
-    def __init__(self, line_index: int, column_index: int, start_index: int, end_index: int) -> None:
-        self.line_index = line_index
-        self.column_index = column_index
-        self.start_index = start_index
-        self.end_index = end_index
+    line_index: int
+    column_index: int
+    start_index: int
+    end_index: int
 
     def __str__(self) -> str:
         length = self.end_index - self.start_index
@@ -75,30 +69,18 @@ class SourceCodeLocation:
         self.end_index = self.start_index
 
 
+@dataclass(frozen=True)
 class Token:
-    def __init__(self, token_type: TokenType, source_code: SourceCode, source_code_location: SourceCodeLocation) -> None:
-        self._token_type = token_type
-        self._source_code = source_code
-        self._source_code_location = source_code_location
-
-    @property
-    def token_type(self) -> TokenType:
-        return self._token_type
+    token_type: TokenType
+    source_code: SourceCode
+    source_code_location: SourceCodeLocation
 
     @property
     def literal(self) -> str:
-        return self._source_code.content[self._source_code_location.start_index: self._source_code_location.end_index]
-
-    @property
-    def source_code_location(self) -> SourceCodeLocation:
-        return self._source_code_location
-
-    @property
-    def source_code(self) -> SourceCode:
-        return self._source_code
+        return self.source_code.content[self.source_code_location.start_index: self.source_code_location.end_index]
 
     def __str__(self) -> str:
-        return f"Token{{literal='{self.literal}', token_type={self._token_type}, location={self._source_code_location}}}"
+        return f"Token{{literal='{self.literal}', token_type={self.token_type}, location={self.source_code_location}}}"
 
 
 def is_part_of_identifier(x: str) -> bool:
@@ -317,63 +299,49 @@ class NodeType(StrEnum):
     name = auto()
 
 
+@dataclass(frozen=True)
 class AbstractSyntaxTreeNode:
-    def __init__(self, node_type: NodeType, token: Token | None = None, nodes: list["AbstractSyntaxTreeNode"] | None = None) -> None:
-        self._node_type = node_type
-        self._token = token
-        self._nodes = nodes or []
-
-    @property
-    def node_type(self) -> NodeType:
-        return self._node_type
-
-    @property
-    def token(self) -> Token | None:
-        return self._token
-
-    @property
-    def nodes(self) -> list["AbstractSyntaxTreeNode"]:
-        return self._nodes
+    node_type: NodeType
+    token: Token | None = None
+    nodes: list["AbstractSyntaxTreeNode"] = field(default_factory=list["AbstractSyntaxTreeNode"])
 
     def __str__(self) -> str:
         string = ""
 
-        if self._token:
-            string += f"{self.node_type} = {str(self._token)}"
+        if self.token:
+            string += f"{self.node_type} = {str(self.token)}"
 
         else:
             tmp_string = ""
-            if self._nodes:
-                for node in self._nodes:
+            if self.nodes:
+                for node in self.nodes:
                     tmp_string += f"{textwrap.indent(str(node), '  ')}\n"
             string += f"{self.node_type} = {{\n{tmp_string}}}"
         return string
 
     def pretty_string(self) -> str:
-        string = ""
-
         if self.token:
-            string += f"{str(self.token.literal)}"
+            return f"{str(self.token.literal)}"
 
-        else:
-            match self.node_type:
-                case NodeType.expr:
-                    string += f"({self.nodes[0].pretty_string()})"
-                case NodeType.function:
-                    string += f"{self.nodes[0].pretty_string()} . {self.nodes[1].pretty_string()}"
-                case NodeType.apply:
-                    string += f"{' '.join([node.pretty_string() for node in self.nodes])}"
-                case NodeType.lazy_record:
-                    string += f"{{{', '.join([node.pretty_string() for node in self.nodes])}}}"
-                case NodeType.eager_record:
-                    string += f"[{', '.join([node.pretty_string() for node in self.nodes])}]"
-                case NodeType.pair:
-                    string += f"{self.nodes[0].pretty_string()} = {self.nodes[1].pretty_string()}"
-                case NodeType.integer:
-                    string += f"{self.token.literal}"
-                case NodeType.name:
-                    string += f"{self.token.literal}"
-        return string
+        match self.node_type:
+            case NodeType.expr:
+                return f"({self.nodes[0].pretty_string()})"
+            case NodeType.function:
+                return f"{self.nodes[0].pretty_string()} . {self.nodes[1].pretty_string()}"
+            case NodeType.apply:
+                return f"{' '.join([node.pretty_string() for node in self.nodes])}"
+            case NodeType.lazy_record:
+                return f"{{{', '.join([node.pretty_string() for node in self.nodes])}}}"
+            case NodeType.eager_record:
+                return f"[{', '.join([node.pretty_string() for node in self.nodes])}]"
+            case NodeType.pair:
+                return f"{self.nodes[0].pretty_string()} = {self.nodes[1].pretty_string()}"
+            case NodeType.integer:
+                return f"{self.token.literal}"
+            case NodeType.name:
+                return f"{self.token.literal}"
+            case _:
+                assert_never(self.node_type)
 
 
 def print_source_code_location(tokens: list[Token], index: int) -> str:
@@ -585,7 +553,7 @@ def syntax_parse_basic(tokens: list[Token], index: int = 0) -> tuple[AbstractSyn
     token = peek_token(tokens, index)
     if token is None:
         error = SyntaxParseError(
-            message=f"expected (int/name/(...)/{...}/[...]), found <end of input>",
+            message=f"expected (int/name/(...)/{{...}}/[...]), found <end of input>",
             tokens=tokens,
             index=index,
             recoverable=True,
@@ -797,8 +765,8 @@ def syntax_parse_tokens(tokens: list[Token]) -> AbstractSyntaxTreeNode | SyntaxP
     if not tokens_without_whitespace:
         return SyntaxParseError("empty input", recoverable=False)
 
-    # for token in tokens_without_whitespace:
-    #     print(token)
+    for token in tokens_without_whitespace:
+        print(token)
 
     tokens = tokens_without_whitespace
 
@@ -807,7 +775,7 @@ def syntax_parse_tokens(tokens: list[Token]) -> AbstractSyntaxTreeNode | SyntaxP
     if type(abstract_syntax_tree) is SyntaxParseError:
         return abstract_syntax_tree
 
-    # print(abstract_syntax_tree)
+    print(abstract_syntax_tree)
 
     if index != len(tokens):
         error = SyntaxParseError(
@@ -842,55 +810,34 @@ class SemanticContext:
         self._level += 1
 
 
+@dataclass(frozen=True)
 class SemanticNode:
-    def __init__(self, node_type: NodeType, nodes: list['SemanticNode'] | None = None, name: str | None = None, integer: int | None = None, token: Token | None = None):
-        self._node_type = node_type
-        self._nodes = nodes
-        self._name = name
-        self._integer = integer
-        self._token = token
-
-    @property
-    def node_type(self) -> NodeType:
-        return self._node_type
-
-    @property
-    def nodes(self) -> list['SemanticNode']:
-        return self._nodes
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def integer(self) -> int:
-        return self._integer
-
-    @property
-    def token(self) -> Token:
-        return self._token
+    node_type: NodeType
+    nodes: list['SemanticNode'] | None = None
+    name: str | None = None
+    integer: int | None = None
+    token: Token | None = None
 
     def pretty_string(self) -> str:
-        string = ""
-
         match self.node_type:
             case NodeType.expr:
-                string += f"({self.nodes[0].pretty_string()})"
+                return f"({self.nodes[0].pretty_string()})"
             case NodeType.function:
-                string += f"{self.nodes[0].pretty_string()} . {self.nodes[1].pretty_string()}"
+                return f"{self.nodes[0].pretty_string()} . {self.nodes[1].pretty_string()}"
             case NodeType.apply:
-                string += f"{' '.join([node.pretty_string() for node in self.nodes])}"
+                return f"{' '.join([node.pretty_string() for node in self.nodes])}"
             case NodeType.lazy_record:
-                string += f"{{{', '.join([node.pretty_string() for node in self.nodes])}}}"
+                return f"{{{', '.join([node.pretty_string() for node in self.nodes])}}}"
             case NodeType.eager_record:
-                string += f"[{', '.join([node.pretty_string() for node in self.nodes])}]"
+                return f"[{', '.join([node.pretty_string() for node in self.nodes])}]"
             case NodeType.pair:
-                string += f"{self.nodes[0].pretty_string()} = {self.nodes[1].pretty_string()}"
+                return f"{self.nodes[0].pretty_string()} = {self.nodes[1].pretty_string()}"
             case NodeType.integer:
-                string += f"{self.integer}"
+                return f"{self.integer}"
             case NodeType.name:
-                string += f"{self.name}"
-        return string
+                return f"{self.name}"
+            case _:
+                assert_never(self.node_type)
 
 
 class SemanticParseError(Exception):
@@ -909,6 +856,8 @@ def semantic_parse_expr(expr: AbstractSyntaxTreeNode, context: SemanticContext) 
 
         case NodeType.apply:
             parsed_node = semantic_parse_apply(node, context=deepcopy(context))
+        case _:
+            assert_never(node.node_type)
 
     if type(parsed_node) == SemanticParseError:
         return parsed_node
@@ -987,6 +936,8 @@ def semantic_parse_apply(apply: AbstractSyntaxTreeNode, context: SemanticContext
 
                 context.bound_names.extend([pair.nodes[0].name for pair in eager_record.nodes])
                 parsed_basics.append(eager_record)
+            case _:
+                assert_never(basic.node_type)
 
     return SemanticNode(NodeType.apply, nodes=parsed_basics)
 
@@ -1080,8 +1031,8 @@ def semantic_parse_name(name: AbstractSyntaxTreeNode, context: SemanticContext) 
 
 
 class EvalContext:
-    def __init__(self, level: int = 0):
-        self._level = level
+    def __init__(self, level: int = 0) -> None:
+        self._level: int = level
 
     @property
     def level(self) -> int:
@@ -1100,7 +1051,7 @@ Environment = dict[str, SemanticNode]
 
 
 def eval_expr(expr: SemanticNode, environment: Environment | None = None, context: EvalContext = EvalContext()) -> SemanticNode | EvalError:
-    # print(f"{' ' * 2 * context.level}eval expr ", expr.pretty_string())
+    print(f"{' ' * 2 * context.level}eval expr ", expr.pretty_string())
     context.increase_level()
 
     environment = {} if environment is None else environment
@@ -1112,6 +1063,8 @@ def eval_expr(expr: SemanticNode, environment: Environment | None = None, contex
             evaluated_node = eval_function(node, copy(environment), context=deepcopy(context))
         case NodeType.apply:
             evaluated_node = eval_apply(node, copy(environment), context=deepcopy(context))
+        case _:
+            assert_never(node.node_type)
 
     if type(evaluated_node) == EvalError:
         return evaluated_node
@@ -1120,7 +1073,7 @@ def eval_expr(expr: SemanticNode, environment: Environment | None = None, contex
 
 
 def eval_function(function: SemanticNode, environment: Environment, context: EvalContext) -> SemanticNode | EvalError:
-    # print(f"{' ' * 2 * context.level}eval function: ", function.pretty_string())
+    print(f"{' ' * 2 * context.level}eval function: ", function.pretty_string())
     context.increase_level()
 
     name = function.nodes[0]
@@ -1138,7 +1091,7 @@ def eval_function(function: SemanticNode, environment: Environment, context: Eva
 
 
 def eval_apply(apply: SemanticNode, environment: Environment, context: EvalContext) -> SemanticNode | EvalError:
-    # print(f"{' ' * 2 * context.level}eval apply: ", apply.pretty_string())
+    print(f"{' ' * 2 * context.level}eval apply: ", apply.pretty_string())
     context.increase_level()
 
     basics = apply.nodes
@@ -1152,7 +1105,7 @@ def eval_apply(apply: SemanticNode, environment: Environment, context: EvalConte
 
 
 def eval_basics(basics: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
-    # print(f"{' ' * 2 * context.level}eval basics: ", [basic.pretty_string() for basic in basics])
+    print(f"{' ' * 2 * context.level}eval basics: ", [basic.pretty_string() for basic in basics])
     context.increase_level()
 
     evaluated_basic: SemanticNode = eval_basic(basics[0], copy(environment), context=deepcopy(context))
@@ -1176,8 +1129,10 @@ def eval_basics(basics: list[SemanticNode], environment: Environment, context: E
                 case _:
                     pass
 
-        case x if x in [NodeType.expr, NodeType.lazy_record, NodeType.eager_record]:
+        case x if x in [NodeType.integer, NodeType.expr, NodeType.lazy_record, NodeType.eager_record]:
             pass
+        case _:
+            assert_never(evaluated_basic.node_type)
 
     if len(basics) == 1:
         return [evaluated_basic]
@@ -1186,7 +1141,7 @@ def eval_basics(basics: list[SemanticNode], environment: Environment, context: E
 
 
 def eval_basic(basic: SemanticNode, environment: Environment, context: EvalContext) -> SemanticNode | EvalError:
-    # print(f"{' ' * 2 * context.level}eval basic: ", basic.pretty_string())
+    print(f"{' ' * 2 * context.level}eval basic: ", basic.pretty_string())
     context.increase_level()
 
     match(basic.node_type):
@@ -1220,6 +1175,9 @@ def eval_basic(basic: SemanticNode, environment: Environment, context: EvalConte
         case NodeType.eager_record:
             return eval_eager_record(basic, copy(environment), context=deepcopy(context))
 
+        case _:
+            assert_never(basic.node_type)
+
 
 def reduce_expr(expr: SemanticNode, context: EvalContext) -> SemanticNode:
     node = expr.nodes[0]
@@ -1236,7 +1194,7 @@ def reduce_expr(expr: SemanticNode, context: EvalContext) -> SemanticNode:
 
 
 def eval_eager_record(eager_record: SemanticNode, environment: Environment, context: EvalContext) -> SemanticNode | EvalError:
-    # print(f"{' ' * 2 * context.level}eval eager-record: ", eager_record.pretty_string())
+    print(f"{' ' * 2 * context.level}eval eager-record: ", eager_record.pretty_string())
     context.increase_level()
 
     pairs = eager_record.nodes
@@ -1266,7 +1224,7 @@ def eval_pairs(pairs: list[SemanticNode], environment: Environment, context: Eva
 
         environment[name.name] = expr
 
-        # print(json.dumps({k: v.pretty_string() for k, v in environment.items()}, sort_keys=True, indent=4))
+        print(json.dumps({k: v.pretty_string() for k, v in environment.items()}, sort_keys=True, indent=4))
 
         evaluated_pairs.append(evaluated_pair)
 
@@ -1274,7 +1232,7 @@ def eval_pairs(pairs: list[SemanticNode], environment: Environment, context: Eva
 
 
 def eval_pair(pair: SemanticNode, environment: Environment, context: EvalContext) -> SemanticNode | EvalError:
-    # print(f"{' ' * 2 * context.level}eval pair: ", pair.pretty_string())
+    print(f"{' ' * 2 * context.level}eval pair: ", pair.pretty_string())
     context.increase_level()
 
     name = pair.nodes[0]
@@ -1291,8 +1249,8 @@ def eval_pair(pair: SemanticNode, environment: Environment, context: EvalContext
 
 
 def apply_arguments_on_basic(basic: SemanticNode, arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
-    # print(f"{' ' * 2 * context.level}apply basic:  ", basic.pretty_string())
-    # print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
+    print(f"{' ' * 2 * context.level}apply basic:  ", basic.pretty_string())
+    print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
     context.increase_level()
 
     match(basic.node_type):
@@ -1317,10 +1275,13 @@ def apply_arguments_on_basic(basic: SemanticNode, arguments: list[SemanticNode],
         case x if x in [NodeType.lazy_record, NodeType.eager_record]:
             return apply_arguments_on_record(basic, arguments, copy(environment), context=deepcopy(context))
 
+        case _:
+            assert_never(basic.node_type)
+
 
 def apply_arguments_on_arithmetic_function(operation_name: str, arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
-    # print(f"{' ' * 2 * context.level}apply arithmetic: ", operation_name)
-    # print(f"{' ' * 2 * context.level}on arguments:     ", [argument.pretty_string() for argument in arguments])
+    print(f"{' ' * 2 * context.level}apply arithmetic: ", operation_name)
+    print(f"{' ' * 2 * context.level}on arguments:     ", [argument.pretty_string() for argument in arguments])
     context.increase_level()
 
     if len(arguments) != 2:
@@ -1351,11 +1312,13 @@ def apply_arguments_on_arithmetic_function(operation_name: str, arguments: list[
             return [SemanticNode(NodeType.integer, integer=argument_1.integer * argument_2.integer)]
         case "div":
             return [SemanticNode(NodeType.integer, integer=argument_1.integer // argument_2.integer)]
+        case _:
+            assert_never(operation_name)
 
 
 def apply_arguments_on_cond(arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
-    # print(f"{' ' * 2 * context.level}apply basic:  ", "cond")
-    # print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
+    print(f"{' ' * 2 * context.level}apply basic:  ", "cond")
+    print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
     context.increase_level()
 
     if len(arguments) != 3:
@@ -1384,10 +1347,7 @@ def is_equivalent_to_true(basic: SemanticNode) -> bool:
         case NodeType.integer:
             return basic.integer != 0
         case x if x in [NodeType.lazy_record, NodeType.eager_record]:
-            if len(basic.nodes) == 0:
-                return False
-            else:
-                return True
+            return len(basic.nodes) != 0
         case _:
             return False
 
@@ -1397,17 +1357,14 @@ def is_equivalent_to_false(basic: SemanticNode) -> bool:
         case NodeType.integer:
             return basic.integer == 0
         case x if x in [NodeType.lazy_record, NodeType.eager_record]:
-            if len(basic.nodes) == 0:
-                return True
-            else:
-                return False
+            return len(basic.nodes) == 0
         case _:
             return False
 
 
 def apply_arguments_on_expr(expr: SemanticNode, arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
-    # print(f"{' ' * 2 * context.level}apply expr:   ", expr.pretty_string())
-    # print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
+    print(f"{' ' * 2 * context.level}apply expr:   ", expr.pretty_string())
+    print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
     context.increase_level()
 
     node = expr.nodes[0]
@@ -1417,11 +1374,13 @@ def apply_arguments_on_expr(expr: SemanticNode, arguments: list[SemanticNode], e
             return apply_arguments_on_function(node, arguments, copy(environment), context=deepcopy(context))
         case NodeType.apply:
             return [expr] + arguments
+        case _:
+            assert_never(node.node_type)
 
 
 def apply_arguments_on_function(function: SemanticNode, arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
-    # print(f"{' ' * 2 * context.level}apply function: ", function.pretty_string())
-    # print(f"{' ' * 2 * context.level}on arguments:   ", [argument.pretty_string() for argument in arguments])
+    print(f"{' ' * 2 * context.level}apply function: ", function.pretty_string())
+    print(f"{' ' * 2 * context.level}on arguments:   ", [argument.pretty_string() for argument in arguments])
     context.increase_level()
 
     name = function.nodes[0]
@@ -1447,8 +1406,8 @@ def apply_arguments_on_function(function: SemanticNode, arguments: list[Semantic
 
 
 def apply_arguments_on_record(record: SemanticNode, arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
-    # print(f"{' ' * 2 * context.level}apply record: ", record.pretty_string())
-    # print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
+    print(f"{' ' * 2 * context.level}apply record: ", record.pretty_string())
+    print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
     context.increase_level()
 
     for pair in reversed(record.nodes):
@@ -1457,7 +1416,7 @@ def apply_arguments_on_record(record: SemanticNode, arguments: list[SemanticNode
 
         environment[name.name] = expr
 
-    # print(json.dumps({k: v.pretty_string() for k, v in environment.items()}, sort_keys=True, indent=4))
+    print(json.dumps({k: v.pretty_string() for k, v in environment.items()}, sort_keys=True, indent=4))
 
     return eval_basics(arguments, copy(environment), context=deepcopy(context))
 
@@ -1470,6 +1429,8 @@ def replace_name_with_basic_in_expr(name: str, argument: SemanticNode, expr: Sem
             node = replace_name_with_basic_in_function(name, argument, node)
         case NodeType.apply:
             node = replace_name_with_basic_in_apply(name, argument, node)
+        case _:
+            assert_never(node.node_type)
 
     return SemanticNode(NodeType.expr, [node])
 
@@ -1521,6 +1482,8 @@ def replace_name_with_basic_in_basic(name: str, argument: SemanticNode, basic: S
         case NodeType.eager_record:
             replaced_record = replace_name_with_basic_in_eager_record(name, argument, basic)
             return replaced_record
+        case _:
+            assert_never(basic.node_type)
 
 
 def replace_name_with_basic_in_lazy_record(name: str, argument: SemanticNode, lazy_record: SemanticNode) -> SemanticNode:
@@ -1585,7 +1548,7 @@ def main() -> None:
         print(semantic_tree, file=sys.stderr)
         exit(1)
 
-    # print(semantic_tree.pretty_string())
+    print(semantic_tree.pretty_string())
 
     evaluated_expr = eval_expr(semantic_tree)
 
