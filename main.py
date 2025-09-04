@@ -3,8 +3,9 @@ import argparse
 import sys
 from pathlib import Path
 from enum import StrEnum, auto
-from copy import deepcopy
+from copy import deepcopy, copy
 import textwrap
+import json
 
 
 class SourceCode:
@@ -139,6 +140,7 @@ def group_characters(source_code: SourceCode) -> list[Token] | InvalidSourceCode
                     )
                 )
                 location.advance()
+
             case x if x.isdigit():
                 # peek all digits
                 peek_index = 0
@@ -167,11 +169,9 @@ def group_characters(source_code: SourceCode) -> list[Token] | InvalidSourceCode
 
                 location.end_index += peek_index
 
-                token_type = TokenType.identifier
-
                 tokens.append(
                     Token(
-                        token_type=token_type,
+                        token_type=TokenType.identifier,
                         source_code=source_code,
                         source_code_location=deepcopy(location),
                     )
@@ -277,6 +277,7 @@ def group_characters(source_code: SourceCode) -> list[Token] | InvalidSourceCode
                     peek_index += 1
 
                 location.end_index += peek_index
+
                 tokens.append(
                     Token(
                         token_type=TokenType.whitespace,
@@ -302,7 +303,7 @@ def group_characters(source_code: SourceCode) -> list[Token] | InvalidSourceCode
     return tokens
 
 
-class AbstractSyntaxTreeNodeType(StrEnum):
+class NodeType(StrEnum):
     expr = auto()
 
     function = auto()
@@ -317,13 +318,13 @@ class AbstractSyntaxTreeNodeType(StrEnum):
 
 
 class AbstractSyntaxTreeNode:
-    def __init__(self, node_type: AbstractSyntaxTreeNodeType, nodes: list["AbstractSyntaxTreeNode"] | None = None, token: Token | None = None) -> None:
+    def __init__(self, node_type: NodeType, token: Token | None = None, nodes: list["AbstractSyntaxTreeNode"] | None = None) -> None:
         self._node_type = node_type
         self._token = token
-        self.nodes = nodes or []
+        self._nodes = nodes or []
 
     @property
-    def node_type(self) -> AbstractSyntaxTreeNodeType:
+    def node_type(self) -> NodeType:
         return self._node_type
 
     @property
@@ -333,10 +334,6 @@ class AbstractSyntaxTreeNode:
     @property
     def nodes(self) -> list["AbstractSyntaxTreeNode"]:
         return self._nodes
-
-    @nodes.setter
-    def nodes(self, nodes: list["AbstractSyntaxTreeNode"]) -> None:
-        self._nodes = nodes
 
     def __str__(self) -> str:
         string = ""
@@ -360,21 +357,21 @@ class AbstractSyntaxTreeNode:
 
         else:
             match self.node_type:
-                case AbstractSyntaxTreeNodeType.expr:
+                case NodeType.expr:
                     string += f"({self.nodes[0].pretty_string()})"
-                case AbstractSyntaxTreeNodeType.function:
+                case NodeType.function:
                     string += f"{self.nodes[0].pretty_string()} . {self.nodes[1].pretty_string()}"
-                case AbstractSyntaxTreeNodeType.apply:
+                case NodeType.apply:
                     string += f"{' '.join([node.pretty_string() for node in self.nodes])}"
-                case AbstractSyntaxTreeNodeType.lazy_record:
+                case NodeType.lazy_record:
                     string += f"{{{', '.join([node.pretty_string() for node in self.nodes])}}}"
-                case AbstractSyntaxTreeNodeType.eager_record:
+                case NodeType.eager_record:
                     string += f"[{', '.join([node.pretty_string() for node in self.nodes])}]"
-                case AbstractSyntaxTreeNodeType.pair:
+                case NodeType.pair:
                     string += f"{self.nodes[0].pretty_string()} = {self.nodes[1].pretty_string()}"
-                case AbstractSyntaxTreeNodeType.integer:
+                case NodeType.integer:
                     string += f"{self.token.literal}"
-                case AbstractSyntaxTreeNodeType.name:
+                case NodeType.name:
                     string += f"{self.token.literal}"
         return string
 
@@ -444,14 +441,16 @@ def match_token(tokens: list[Token], index: int, token_types: list[Token]) -> tu
 
 def expect_token(tokens: list[Token], index: int, token_types: list[Token]) -> tuple[Token | SyntaxParseError, int]:
     token = peek_token(tokens, index)
+
     if token is None:
-        return SyntaxParseError(
+        error = SyntaxParseError(
             f"expected {', '.join(f"'{token_type}'" for token_type in token_types)}, found <end of input>",
             tokens=tokens,
             index=index,
             recoverable=False,
             at_end=True,
-        ), index
+        )
+        return error, index
 
     if token.token_type not in token_types:
         error = SyntaxParseError(
@@ -472,7 +471,7 @@ def syntax_parse_name(tokens: list[Token], index: int = 0) -> tuple[AbstractSynt
     if type(name) == SyntaxParseError:
         return name, start_index
 
-    return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=name), index
+    return AbstractSyntaxTreeNode(NodeType.name, token=name), index
 
 
 def syntax_parse_integer(tokens: list[Token], index: int = 0) -> tuple[AbstractSyntaxTreeNode | SyntaxParseError, int]:
@@ -483,7 +482,7 @@ def syntax_parse_integer(tokens: list[Token], index: int = 0) -> tuple[AbstractS
     if type(integer) == SyntaxParseError:
         return integer, start_index
 
-    return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.integer, token=integer), index
+    return AbstractSyntaxTreeNode(NodeType.integer, token=integer), index
 
 
 def syntax_parse_function(tokens: list[Token], index: int = 0) -> tuple[AbstractSyntaxTreeNode, int]:
@@ -512,7 +511,7 @@ def syntax_parse_function(tokens: list[Token], index: int = 0) -> tuple[Abstract
 
     name, index = advance_token(tokens, index)
 
-    name = AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.name, token=name)
+    name = AbstractSyntaxTreeNode(NodeType.name, token=name)
 
     dot, index = advance_token(tokens, index)
 
@@ -530,7 +529,7 @@ def syntax_parse_function(tokens: list[Token], index: int = 0) -> tuple[Abstract
         else:
             return expr, start_index
 
-    return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.function, nodes=[name, expr]), index
+    return AbstractSyntaxTreeNode(NodeType.function, nodes=[name, expr]), index
 
 
 def syntax_parse_expr(tokens: list[Token], index: int = 0) -> tuple[AbstractSyntaxTreeNode | SyntaxParseError, int]:
@@ -539,7 +538,7 @@ def syntax_parse_expr(tokens: list[Token], index: int = 0) -> tuple[AbstractSynt
     function, index = syntax_parse_function(tokens, index)
 
     if type(function) is AbstractSyntaxTreeNode:
-        return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.expr, nodes=[function]), index
+        return AbstractSyntaxTreeNode(NodeType.expr, nodes=[function]), index
 
     if type(function) is SyntaxParseError and not function.recoverable:
         return function, start_index
@@ -549,7 +548,7 @@ def syntax_parse_expr(tokens: list[Token], index: int = 0) -> tuple[AbstractSynt
     if type(apply) is SyntaxParseError:
         return apply, start_index
 
-    return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.expr, nodes=[apply]), index
+    return AbstractSyntaxTreeNode(NodeType.expr, nodes=[apply]), index
 
 
 def syntax_parse_apply(tokens: list[Token], index: int = 0) -> tuple[AbstractSyntaxTreeNode | SyntaxParseError, int]:
@@ -577,7 +576,7 @@ def syntax_parse_apply(tokens: list[Token], index: int = 0) -> tuple[AbstractSyn
 
         basics.append(next_basic)
 
-    return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.apply, nodes=basics), index
+    return AbstractSyntaxTreeNode(NodeType.apply, nodes=basics), index
 
 
 def syntax_parse_basic(tokens: list[Token], index: int = 0) -> tuple[AbstractSyntaxTreeNode | SyntaxParseError, int]:
@@ -595,14 +594,10 @@ def syntax_parse_basic(tokens: list[Token], index: int = 0) -> tuple[AbstractSyn
         return error, start_index
 
     if token.token_type == TokenType.integer:
-        integer, index = syntax_parse_integer(tokens, index)
-
-        return integer, index
+        return syntax_parse_integer(tokens, index)
 
     if token.token_type == TokenType.identifier:
-        name, index = syntax_parse_name(tokens, index)
-
-        return name, index
+        return syntax_parse_name(tokens, index)
 
     if token.token_type == TokenType.left_parenthesis:
         left_parenthesis, index = advance_token(tokens, index)
@@ -663,7 +658,7 @@ def syntax_parse_basic(tokens: list[Token], index: int = 0) -> tuple[AbstractSyn
         if next_token.token_type == TokenType.right_brace:
             next_token, index = advance_token(tokens, index)
 
-            return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.lazy_record, nodes=[]), index
+            return AbstractSyntaxTreeNode(NodeType.lazy_record, nodes=[]), index
 
         if next_token.token_type != TokenType.identifier:
             error = SyntaxParseError(
@@ -683,7 +678,7 @@ def syntax_parse_basic(tokens: list[Token], index: int = 0) -> tuple[AbstractSyn
         if type(right_brace) is SyntaxParseError:
             return right_brace, start_index
 
-        return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.lazy_record, nodes=pairs), index
+        return AbstractSyntaxTreeNode(NodeType.lazy_record, nodes=pairs), index
 
     if token.token_type == TokenType.left_bracket:
         left_bracket, index = advance_token(tokens, index)
@@ -702,7 +697,7 @@ def syntax_parse_basic(tokens: list[Token], index: int = 0) -> tuple[AbstractSyn
         if next_token.token_type == TokenType.right_bracket:
             next_token, index = advance_token(tokens, index)
 
-            return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.eager_record, tokens=[]), index
+            return AbstractSyntaxTreeNode(NodeType.eager_record, nodes=[]), index
 
         if next_token.token_type != TokenType.identifier:
             error = SyntaxParseError(
@@ -722,7 +717,7 @@ def syntax_parse_basic(tokens: list[Token], index: int = 0) -> tuple[AbstractSyn
         if type(right_bracket) is SyntaxParseError:
             return right_bracket, start_index
 
-        return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.lazy_record, nodes=pairs), index
+        return AbstractSyntaxTreeNode(NodeType.eager_record, nodes=pairs), index
 
     if token.token_type in [TokenType.dot, TokenType.equal_sign]:
         error = SyntaxParseError(
@@ -746,27 +741,7 @@ def syntax_parse_pairs(tokens: list[TokenType], index: int = 0) -> tuple[list[Ab
 
     pairs: list[AbstractSyntaxTreeNode] = []
 
-    def syntax_parse_one_pair(tokens: list[Token], index: int) -> tuple[AbstractSyntaxTreeNode | SyntaxParseError, int]:
-        start_index = index
-
-        name, index = syntax_parse_name(tokens, index)
-
-        if type(name) is SyntaxParseError:
-            return name, start_index
-
-        equal_sign, index = expect_token(tokens, index, token_types=[TokenType.equal_sign])
-
-        if type(equal_sign) is SyntaxParseError:
-            return equal_sign, start_index
-
-        value, index = syntax_parse_expr(tokens, index)
-
-        if type(value) is SyntaxParseError:
-            return value, start_index
-
-        return AbstractSyntaxTreeNode(AbstractSyntaxTreeNodeType.pair, nodes=[name, value]), index
-
-    first, index = syntax_parse_one_pair(tokens, index)
+    first, index = syntax_parse_pair(tokens, index)
 
     if type(first) is SyntaxParseError:
         return first, start_index
@@ -778,7 +753,7 @@ def syntax_parse_pairs(tokens: list[TokenType], index: int = 0) -> tuple[list[Ab
         if not comma:
             break
 
-        next_pair, index = syntax_parse_one_pair(tokens, index_2)
+        next_pair, index = syntax_parse_pair(tokens, index_2)
 
         if type(next_pair) is SyntaxParseError:
             return next_pair, start_index
@@ -786,6 +761,27 @@ def syntax_parse_pairs(tokens: list[TokenType], index: int = 0) -> tuple[list[Ab
         pairs.append(next_pair)
 
     return pairs, index
+
+
+def syntax_parse_pair(tokens: list[Token], index: int) -> tuple[AbstractSyntaxTreeNode | SyntaxParseError, int]:
+    start_index = index
+
+    name, index = syntax_parse_name(tokens, index)
+
+    if type(name) is SyntaxParseError:
+        return name, start_index
+
+    equal_sign, index = expect_token(tokens, index, token_types=[TokenType.equal_sign])
+
+    if type(equal_sign) is SyntaxParseError:
+        return equal_sign, start_index
+
+    value, index = syntax_parse_expr(tokens, index)
+
+    if type(value) is SyntaxParseError:
+        return value, start_index
+
+    return AbstractSyntaxTreeNode(NodeType.pair, nodes=[name, value]), index
 
 
 def syntax_parse_tokens(tokens: list[Token]) -> AbstractSyntaxTreeNode | SyntaxParseError:
@@ -801,8 +797,8 @@ def syntax_parse_tokens(tokens: list[Token]) -> AbstractSyntaxTreeNode | SyntaxP
     if not tokens_without_whitespace:
         return SyntaxParseError("empty input", recoverable=False)
 
-    for token in tokens_without_whitespace:
-        print(token)
+    # for token in tokens_without_whitespace:
+    #     print(token)
 
     tokens = tokens_without_whitespace
 
@@ -811,7 +807,7 @@ def syntax_parse_tokens(tokens: list[Token]) -> AbstractSyntaxTreeNode | SyntaxP
     if type(abstract_syntax_tree) is SyntaxParseError:
         return abstract_syntax_tree
 
-    print(abstract_syntax_tree)
+    # print(abstract_syntax_tree)
 
     if index != len(tokens):
         error = SyntaxParseError(
@@ -842,34 +838,20 @@ class SemanticContext:
     def level(self) -> int:
         return self._level
 
-    @level.setter
-    def level(self, level: int) -> None:
-        self._level = level
-
-
-class SemanticNodeType(StrEnum):
-    expr = auto()
-
-    function = auto()
-    apply = auto()
-
-    lazy_record = auto()
-    eager_record = auto()
-    pair = auto()
-
-    integer = auto()
-    name = auto()
+    def increase_level(self) -> None:
+        self._level += 1
 
 
 class SemanticNode:
-    def __init__(self, node_type: SemanticNodeType, nodes: list['SemanticNode'] | None = None, name: str | None = None, integer: int | None = None):
+    def __init__(self, node_type: NodeType, nodes: list['SemanticNode'] | None = None, name: str | None = None, integer: int | None = None, token: Token | None = None):
         self._node_type = node_type
         self._nodes = nodes
         self._name = name
         self._integer = integer
+        self._token = token
 
     @property
-    def node_type(self) -> SemanticNodeType:
+    def node_type(self) -> NodeType:
         return self._node_type
 
     @property
@@ -884,201 +866,229 @@ class SemanticNode:
     def integer(self) -> int:
         return self._integer
 
+    @property
+    def token(self) -> Token:
+        return self._token
+
+    def pretty_string(self) -> str:
+        string = ""
+
+        match self.node_type:
+            case NodeType.expr:
+                string += f"({self.nodes[0].pretty_string()})"
+            case NodeType.function:
+                string += f"{self.nodes[0].pretty_string()} . {self.nodes[1].pretty_string()}"
+            case NodeType.apply:
+                string += f"{' '.join([node.pretty_string() for node in self.nodes])}"
+            case NodeType.lazy_record:
+                string += f"{{{', '.join([node.pretty_string() for node in self.nodes])}}}"
+            case NodeType.eager_record:
+                string += f"[{', '.join([node.pretty_string() for node in self.nodes])}]"
+            case NodeType.pair:
+                string += f"{self.nodes[0].pretty_string()} = {self.nodes[1].pretty_string()}"
+            case NodeType.integer:
+                string += f"{self.integer}"
+            case NodeType.name:
+                string += f"{self.name}"
+        return string
+
 
 class SemanticParseError(Exception):
     def __init__(self, message):
         super().__init__(message)
 
 
-def semantic_parse_expr(ast: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
-    assert type(ast) == AbstractSyntaxTreeNode
-    assert ast.node_type == AbstractSyntaxTreeNodeType.expr
+def semantic_parse_expr(expr: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
+    node = expr.nodes[0]
 
-    nodes: list[SemanticNode] = []
-
-    node = ast.nodes[0]
-
-    context.level += 1
+    context.increase_level()
 
     match(node.node_type):
-        case AbstractSyntaxTreeNodeType.function:
-            function = semantic_parse_function(node, context=deepcopy(context))
-            if type(function) == SemanticParseError:
-                return function
-            nodes.append(function)
-        case AbstractSyntaxTreeNodeType.apply:
-            apply = semantic_parse_apply(node, context=deepcopy(context))
-            if type(apply) == SemanticParseError:
-                return apply
-            nodes.append(apply)
+        case NodeType.function:
+            parsed_node = semantic_parse_function(node, context=deepcopy(context))
 
-    return SemanticNode(SemanticNodeType.expr, nodes=nodes)
+        case NodeType.apply:
+            parsed_node = semantic_parse_apply(node, context=deepcopy(context))
+
+    if type(parsed_node) == SemanticParseError:
+        return parsed_node
+
+    return SemanticNode(NodeType.expr, nodes=[parsed_node])
 
 
-def semantic_parse_function(ast: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
-    assert type(ast) == AbstractSyntaxTreeNode
-    assert ast.node_type == AbstractSyntaxTreeNodeType.function
+def semantic_parse_function(function: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
+    name = function.nodes[0]
+    expr = function.nodes[1]
 
-    nodes: list[SemanticNode] = []
+    context.increase_level()
 
-    context.level += 1
+    parsed_name = semantic_parse_function_name(name, context=deepcopy(context))
 
-    name = semantic_parse_function_name(ast.nodes[0], context=deepcopy(context))
-    if type(name) == SemanticParseError:
-        return name
-    nodes.append(name)
+    if type(parsed_name) == SemanticParseError:
+        return parsed_name
 
-    context.bound_names.append(name.name)
+    context.bound_names.append(parsed_name.name)
 
-    expr = semantic_parse_expr(ast.nodes[1], context=deepcopy(context))
-    if type(expr) == SemanticParseError:
-        return expr
-    nodes.append(expr)
+    parsed_expr = semantic_parse_expr(expr, context=deepcopy(context))
 
-    return SemanticNode(SemanticNodeType.function, nodes=[name, expr])
+    if type(parsed_expr) == SemanticParseError:
+        return parsed_expr
+
+    return SemanticNode(NodeType.function, nodes=[parsed_name, parsed_expr])
 
 
-def semantic_parse_apply(ast: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
-    assert type(ast) == AbstractSyntaxTreeNode
-    assert ast.node_type == AbstractSyntaxTreeNodeType.apply
+def semantic_parse_apply(apply: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
+    basics = apply.nodes
 
-    nodes: list[SemanticNode] = []
+    context.increase_level()
 
-    context.level += 1
+    parsed_basics: list[SemanticNode] = []
 
-    for node in ast.nodes:
-        match(node.node_type):
-            case AbstractSyntaxTreeNodeType.integer:
-                integer = semantic_parse_integer(node, context=deepcopy(context))
+    for basic in basics:
+        match(basic.node_type):
+            case NodeType.integer:
+                integer = semantic_parse_integer(basic, context=deepcopy(context))
+
                 if type(integer) == SemanticParseError:
                     return integer
-                nodes.append(integer)
-            case AbstractSyntaxTreeNodeType.name:
-                name = semantic_parse_name(node, context=deepcopy(context))
+
+                parsed_basics.append(integer)
+
+            case NodeType.name:
+                name = semantic_parse_name(basic, context=deepcopy(context))
+
                 if type(name) == SemanticParseError:
                     return name
-                nodes.append(name)
-            case AbstractSyntaxTreeNodeType.expr:
-                expr = semantic_parse_expr(node, context=deepcopy(context))
+
+                parsed_basics.append(name)
+
+            case NodeType.expr:
+                expr = semantic_parse_expr(basic, context=deepcopy(context))
+
                 if type(expr) == SemanticParseError:
                     return expr
-                nodes.append(expr)
-            case AbstractSyntaxTreeNodeType.lazy_record:
-                eager_record = semantic_parse_lazy_record(node, context=deepcopy(context))
+
+                parsed_basics.append(expr)
+
+            case NodeType.lazy_record:
+                lazy_record = semantic_parse_lazy_record(basic, context=deepcopy(context))
+
+                if type(lazy_record) == SemanticParseError:
+                    return lazy_record
+
+                context.bound_names.extend([pair.nodes[0].name for pair in lazy_record.nodes])
+                parsed_basics.append(lazy_record)
+
+            case NodeType.eager_record:
+                eager_record = semantic_parse_eager_record(basic, context=deepcopy(context))
+
                 if type(eager_record) == SemanticParseError:
                     return eager_record
 
-                context.bound_names.extend([pairs.nodes[0].token.literal for pairs in node.nodes])
-                nodes.append(eager_record)
-            case AbstractSyntaxTreeNodeType.eager_record:
-                eager_record = semantic_parse_eager_record(node, context=deepcopy(context))
-                if type(eager_record) == SemanticParseError:
-                    return eager_record
+                context.bound_names.extend([pair.nodes[0].name for pair in eager_record.nodes])
+                parsed_basics.append(eager_record)
 
-                context.bound_names.extend([pairs.nodes[0].literal for pairs in node.nodes])
-                nodes.append(eager_record)
-
-    return SemanticNode(SemanticNodeType.apply, nodes=nodes)
+    return SemanticNode(NodeType.apply, nodes=parsed_basics)
 
 
-def semantic_parse_lazy_record(ast: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
-    assert type(ast) == AbstractSyntaxTreeNode
-    assert ast.node_type == AbstractSyntaxTreeNodeType.lazy_record
+def semantic_parse_lazy_record(lazy_record: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
+    pairs = lazy_record.nodes
 
-    nodes: list[SemanticNode] = []
+    context.increase_level()
 
-    context.level += 1
+    parsed_pairs: list[SemanticNode] = []
 
-    for node in ast.nodes:
-        pair = semantic_parse_pair(node, context=deepcopy(context))
-        if type(pair) == SemanticParseError:
-            return pair
-        nodes.append(pair)
+    for pair in pairs:
+        parsed_pair = semantic_parse_pair(pair, context=deepcopy(context))
 
-        context.bound_names.append(node.nodes[0].token.literal)
+        if type(parsed_pair) == SemanticParseError:
+            return parsed_pair
 
-    return SemanticNode(SemanticNodeType.lazy_record, nodes=nodes)
+        context.bound_names.append(parsed_pair.nodes[0].name)
+        parsed_pairs.append(parsed_pair)
 
-
-def semantic_parse_eager_record(ast: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
-    assert type(ast) == AbstractSyntaxTreeNode
-    assert ast.node_type == AbstractSyntaxTreeNodeType.eager_record
-
-    nodes: list[SemanticNode] = []
-
-    context.level += 1
-
-    for node in ast.nodes:
-        pair = semantic_parse_pair(node, context=deepcopy(context))
-        if type(pair) == SemanticParseError:
-            return pair
-        nodes.append(pair)
-
-        context.bound_names.append(ast.nodes[0].literal)
-
-    return SemanticNode(SemanticNodeType.eager_record, nodes=nodes)
+    return SemanticNode(NodeType.lazy_record, nodes=parsed_pairs)
 
 
-def semantic_parse_pair(ast: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
-    assert type(ast) == AbstractSyntaxTreeNode
-    assert ast.node_type == AbstractSyntaxTreeNodeType.pair
+def semantic_parse_eager_record(eager_record: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
+    pairs = eager_record.nodes
 
-    nodes: list[SemanticNode] = []
+    context.increase_level()
 
-    context.level += 1
+    parsed_pairs: list[SemanticNode] = []
 
-    name = semantic_parse_pair_name(ast.nodes[0], context=deepcopy(context))
-    if type(name) == SemanticParseError:
-        return name
+    for pair in pairs:
+        parsed_pair = semantic_parse_pair(pair, context=deepcopy(context))
 
-    nodes.append(name)
+        if type(parsed_pair) == SemanticParseError:
+            return parsed_pair
 
-    expr = semantic_parse_expr(ast.nodes[1], context=deepcopy(context))
-    if type(expr) == SemanticParseError:
-        return expr
+        context.bound_names.append(parsed_pair.nodes[0].name)
+        parsed_pairs.append(parsed_pair)
 
-    nodes.append(expr)
-
-    return SemanticNode(SemanticNodeType.pair, nodes=nodes)
+    return SemanticNode(NodeType.eager_record, nodes=parsed_pairs)
 
 
-def semantic_parse_integer(ast: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
-    assert type(ast) == AbstractSyntaxTreeNode
-    assert ast.node_type == AbstractSyntaxTreeNodeType.integer
+def semantic_parse_pair(pair: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
+    name = pair.nodes[0]
+    expr = pair.nodes[1]
 
-    context.level += 1
+    context.increase_level()
 
-    return SemanticNode(SemanticNodeType.integer, integer=int(ast.token.literal))
+    parsed_name = semantic_parse_pair_name(name, context=deepcopy(context))
+    if type(parsed_name) == SemanticParseError:
+        return parsed_name
 
+    if parsed_name.name in ["plus", "minus", "mult", "div", "cond"]:
+        return SemanticParseError(f"{parsed_name.name} cannot be a binding name in a record", parsed_name)
 
-def semantic_parse_pair_name(ast: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
-    assert type(ast) == AbstractSyntaxTreeNode
-    assert ast.node_type == AbstractSyntaxTreeNodeType.name
+    context.bound_names.append(parsed_name.name)
 
-    context.level += 1
+    parsed_expr = semantic_parse_expr(expr, context=deepcopy(context))
+    if type(parsed_expr) == SemanticParseError:
+        return parsed_expr
 
-    return SemanticNode(SemanticNodeType.name, name=ast.token.literal)
-
-
-def semantic_parse_function_name(ast: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
-    assert type(ast) == AbstractSyntaxTreeNode
-    assert ast.node_type == AbstractSyntaxTreeNodeType.name
-
-    context.level += 1
-
-    return SemanticNode(SemanticNodeType.name, name=ast.token.literal)
+    return SemanticNode(NodeType.pair, nodes=[parsed_name, parsed_expr])
 
 
-def semantic_parse_name(ast: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
-    assert type(ast) == AbstractSyntaxTreeNode
-    assert ast.node_type == AbstractSyntaxTreeNodeType.name
+def semantic_parse_integer(integer: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
+    context.increase_level()
 
-    context.level += 1
+    return SemanticNode(NodeType.integer, integer=int(integer.token.literal), token=integer.token)
 
-    if ast.token.literal not in context.bound_names:
-        return SemanticParseError("name not bound")
 
-    return SemanticNode(SemanticNodeType.name, name=ast.token.literal)
+def semantic_parse_pair_name(name: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
+    context.increase_level()
+
+    return SemanticNode(NodeType.name, name=name.token.literal, token=name.token)
+
+
+def semantic_parse_function_name(name: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
+    context.increase_level()
+
+    return SemanticNode(NodeType.name, name=name.token.literal, token=name.token)
+
+
+def semantic_parse_name(name: AbstractSyntaxTreeNode, context: SemanticContext) -> SemanticNode | SemanticParseError:
+    context.increase_level()
+
+    # forbid free names
+    # if name.token.literal not in context.bound_names:
+    #     return SemanticParseError(f"name '{name.token.literal}' not bound in scope {context.bound_names}")
+
+    return SemanticNode(NodeType.name, name=name.token.literal, token=name.token)
+
+
+class EvalContext:
+    def __init__(self, level: int = 0):
+        self._level = level
+
+    @property
+    def level(self) -> int:
+        return self._level
+
+    def increase_level(self) -> None:
+        self._level += 1
 
 
 class EvalError(Exception):
@@ -1086,253 +1096,464 @@ class EvalError(Exception):
         super().__init__(message)
 
 
-def eval_expr(expr: SemanticNode) -> SemanticNode | EvalError:
+Environment = dict[str, SemanticNode]
+
+
+def eval_expr(expr: SemanticNode, environment: Environment | None = None, context: EvalContext = EvalContext()) -> SemanticNode | EvalError:
+    # print(f"{' ' * 2 * context.level}eval expr ", expr.pretty_string())
+    context.increase_level()
+
+    environment = {} if environment is None else environment
+
     node = expr.nodes[0]
 
     match(node.node_type):
-        case SemanticNodeType.function:
-            evaluated_node = eval_function(node)
-        case SemanticNodeType.apply:
-            evaluated_node = eval_apply(node)
+        case NodeType.function:
+            evaluated_node = eval_function(node, copy(environment), context=deepcopy(context))
+        case NodeType.apply:
+            evaluated_node = eval_apply(node, copy(environment), context=deepcopy(context))
 
     if type(evaluated_node) == EvalError:
         return evaluated_node
 
-    return SemanticNode(SemanticNodeType.expr, nodes=[evaluated_node])
+    return SemanticNode(NodeType.expr, nodes=[evaluated_node])
 
 
-def eval_function(function: SemanticNode) -> SemanticNode | EvalError:
+def eval_function(function: SemanticNode, environment: Environment, context: EvalContext) -> SemanticNode | EvalError:
+    # print(f"{' ' * 2 * context.level}eval function: ", function.pretty_string())
+    context.increase_level()
+
     name = function.nodes[0]
     expr = function.nodes[1]
 
-    evaluated_expr = eval_expr(expr)
+    # shadow name
+    environment.pop(name.name, None)
+
+    evaluated_expr = eval_expr(expr, copy(environment), context=deepcopy(context))
 
     if type(evaluated_expr) == EvalError:
         return evaluated_expr
 
-    return SemanticNode(SemanticNodeType.function, nodes=[name, evaluated_expr])
+    return SemanticNode(NodeType.function, nodes=[name, evaluated_expr])
 
 
-def eval_apply(apply: SemanticNode) -> SemanticNode | EvalError:
+def eval_apply(apply: SemanticNode, environment: Environment, context: EvalContext) -> SemanticNode | EvalError:
+    # print(f"{' ' * 2 * context.level}eval apply: ", apply.pretty_string())
+    context.increase_level()
+
     basics = apply.nodes
 
-    evaluated_basics = eval_basics(basics)
+    evaluated_basics = eval_basics(basics, copy(environment), context=deepcopy(context))
+
+    if type(evaluated_basics) == EvalError:
+        return evaluated_basics
+
+    return SemanticNode(NodeType.apply, nodes=evaluated_basics)
+
+
+def eval_basics(basics: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
+    # print(f"{' ' * 2 * context.level}eval basics: ", [basic.pretty_string() for basic in basics])
+    context.increase_level()
+
+    evaluated_basic: SemanticNode = eval_basic(basics[0], copy(environment), context=deepcopy(context))
 
     if type(evaluated_basic) == EvalError:
         return evaluated_basic
 
-    return SemanticNode(SemanticNodeType.apply, nodes=evaluated_pairs)
+    match(evaluated_basic.node_type):
+        case NodeType.name:
+            match(evaluated_basic.name):
+                case x if x in ["plus", "minus", "mult", "div"]:
+                    if len(basics[1:]) != 2:
+                        return EvalError(f"{evaluated_basic.name} needs to have exactly 2 arguments")
+                    else:
+                        pass
+                case "cond":
+                    if len(basics[1:]) != 3:
+                        return EvalError(f"{evaluated_basic.name} needs to have exactly 3 arguments")
+                    else:
+                        pass
+                case _:
+                    pass
 
-
-def eval_basics(basics: list[SemanticNode]) -> list[SemanticNode] | EvalError:
-    evaluated_basic = eval_basic(basics[0])
-
-    if type(evaluated_basic) == EvalError:
-        return evaluated_basic
+        case x if x in [NodeType.expr, NodeType.lazy_record, NodeType.eager_record]:
+            pass
 
     if len(basics) == 1:
         return [evaluated_basic]
 
-    reduced_basics = apply_arguments_on_function(evaluated_basic, basics[1:])
-
-    if type(reduced_basics) == EvalError:
-        return reduced_basics
-
-    return eval_basics(reduced_basics)
+    return apply_arguments_on_basic(evaluated_basic, basics[1:], copy(environment), context=deepcopy(context))
 
 
-def eval_eager_record(eager_record: SemanticNode) -> SemanticNode | EvalError:
+def eval_basic(basic: SemanticNode, environment: Environment, context: EvalContext) -> SemanticNode | EvalError:
+    # print(f"{' ' * 2 * context.level}eval basic: ", basic.pretty_string())
+    context.increase_level()
+
+    match(basic.node_type):
+        case NodeType.integer:
+            return basic
+
+        case NodeType.name:
+            expr = environment.get(basic.name)
+
+            if expr is None:
+                return basic
+
+            evaluated_basic = eval_basic(expr, copy(environment), deepcopy(context))
+
+            if type(evaluated_basic) == EvalError:
+                return evaluated_basic
+
+            return evaluated_basic
+
+        case NodeType.expr:
+            evaluated_expr = eval_expr(basic, copy(environment), context=deepcopy(context))
+
+            if type(evaluated_expr) == EvalError:
+                return evaluated_expr
+
+            return reduce_expr(evaluated_expr, context=deepcopy(context))
+
+        case NodeType.lazy_record:
+            return basic
+
+        case NodeType.eager_record:
+            return eval_eager_record(basic, copy(environment), context=deepcopy(context))
+
+
+def reduce_expr(expr: SemanticNode, context: EvalContext) -> SemanticNode:
+    node = expr.nodes[0]
+
+    if node.node_type != NodeType.apply:
+        return expr
+
+    apply = node
+
+    if len(apply.nodes) != 1:
+        return expr
+
+    return apply.nodes[0]
+
+
+def eval_eager_record(eager_record: SemanticNode, environment: Environment, context: EvalContext) -> SemanticNode | EvalError:
+    # print(f"{' ' * 2 * context.level}eval eager-record: ", eager_record.pretty_string())
+    context.increase_level()
+
     pairs = eager_record.nodes
 
-    evaluated_pairs = eval_pairs(pairs)
+    evaluated_pairs = eval_pairs(pairs, copy(environment), context=deepcopy(context))
 
     if type(evaluated_pairs) == EvalError:
         return evaluated_pairs
 
-    return SemanticNode(SemanticNodeType.lazy_record, nodes=evaluated_pairs)
+    return SemanticNode(NodeType.lazy_record, nodes=evaluated_pairs)
 
 
-def eval_pairs(pairs: list[SemanticNode]) -> list[SemanticNode] | EvalError:
-    evaluated_pair = eval_pair(pairs[0])
+def eval_pairs(pairs: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
+    if len(pairs) == 0:
+        return []
 
-    if type(evaluated_pair) == EvalError:
-        return evaluated_pair
+    evaluated_pairs = []
 
-    if len(pairs) == 1:
-        return [evaluated_pair]
+    for pair in pairs:
+        evaluated_pair = eval_pair(pair, copy(environment), context=deepcopy(context))
 
-    name = evaluated_pair.nodes[0]
-    expr = evaluated_pair.nodes[1]
+        if type(evaluated_pair) == EvalError:
+            return evaluated_pair
 
-    replaced_pairs = replace_name_with_expr_in_pairs(name, expr, pairs[1:])
+        name = evaluated_pair.nodes[0]
+        expr = evaluated_pair.nodes[1]
 
-    evaluated_pairs = eval_pairs(replaced_pairs)
+        environment[name.name] = expr
 
-    if type(evaluated_pairs) == EvalError:
-        return evaluated_pairs
+        # print(json.dumps({k: v.pretty_string() for k, v in environment.items()}, sort_keys=True, indent=4))
 
-    return [evaluated_pair] + evaluated_pairs
+        evaluated_pairs.append(evaluated_pair)
+
+    return evaluated_pairs
 
 
-def eval_pair(pair: SemanticNode) -> SemanticNode | EvalError:
+def eval_pair(pair: SemanticNode, environment: Environment, context: EvalContext) -> SemanticNode | EvalError:
+    # print(f"{' ' * 2 * context.level}eval pair: ", pair.pretty_string())
+    context.increase_level()
+
     name = pair.nodes[0]
     expr = pair.nodes[1]
 
-    evaluated_expr = eval_expr(expr)
+    evaluated_expr = eval_expr(expr, copy(environment), context=deepcopy(context))
 
     if type(evaluated_expr) == EvalError:
         return evaluated_expr
 
-    return SemanticNode(SemanticNodeType.pair, nodes=[name, evaluated_expr])
+    reduced_expr = reduce_expr(evaluated_expr, context=deepcopy(context))
+
+    return SemanticNode(NodeType.pair, nodes=[name, reduced_expr])
 
 
-def apply_arguments_on_basic(basic: SemanticNode, arguments: list[SemanticNode]) -> list[SemanticNode] | EvalError:
+def apply_arguments_on_basic(basic: SemanticNode, arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
+    # print(f"{' ' * 2 * context.level}apply basic:  ", basic.pretty_string())
+    # print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
+    context.increase_level()
+
     match(basic.node_type):
-        case SemanticNodeType.integer:
+        case NodeType.integer:
             if len(arguments) != 0:
                 return EvalError("integer cannot be applied on arguments")
             else:
                 return basic
-        case SemanticNodeType.name:
+
+        case NodeType.name:
             match(basic.name):
-                case "plus":
-                    pass
-                case "minus":
-                    pass
-                case "mult":
-                    pass
-                case "div":
-                    pass
+                case x if x in ["plus", "minus", "mult", "div"]:
+                    return apply_arguments_on_arithmetic_function(x, arguments, copy(environment), context=deepcopy(context))
                 case "cond":
-                    pass
-        case SemanticNodeType.expr:
-            pass
-        case SemanticNodeType.lazy_record:
-            pass
-        case SemanticNodeType.eager_record:
-            pass
+                    return apply_arguments_on_cond(arguments, copy(environment), context=deepcopy(context))
+                case _:
+                    return [basic] + arguments
+
+        case NodeType.expr:
+            return apply_arguments_on_expr(basic, arguments, copy(environment), context=deepcopy(context))
+
+        case x if x in [NodeType.lazy_record, NodeType.eager_record]:
+            return apply_arguments_on_record(basic, arguments, copy(environment), context=deepcopy(context))
 
 
-def replace_name_with_expr_in_pairs(name: SemanticNode, expr: SemanticNode, pairs: list[SemanticNode]) -> list[SemanticNode] | EvalError:
-    replaced_pairs = []
+def apply_arguments_on_arithmetic_function(operation_name: str, arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
+    # print(f"{' ' * 2 * context.level}apply arithmetic: ", operation_name)
+    # print(f"{' ' * 2 * context.level}on arguments:     ", [argument.pretty_string() for argument in arguments])
+    context.increase_level()
 
-    for pair in pairs:
-        replaced_pair = replace_name_with_expr_in_pair(name, expr, pair)
+    if len(arguments) != 2:
+        return EvalError(f"{operation_name} needs to have exactly 2 arguments")
 
-        if type(replaced_pair) == EvalError:
-            return replaced_pair
+    argument_1 = eval_basic(arguments[0], copy(environment), context=deepcopy(context))
 
-        replaced_pairs.append(replaced_pair)
+    if type(argument_1) == EvalError:
+        return argument_1
 
-    return replaced_pairs
+    argument_2 = eval_basic(arguments[1], copy(environment), context=deepcopy(context))
+
+    if type(argument_2) == EvalError:
+        return argument_2
+
+    if argument_1.node_type != NodeType.integer:
+        return [SemanticNode(node_type=NodeType.name, name=operation_name), argument_1, argument_2]
+
+    if argument_2.node_type != NodeType.integer:
+        return [SemanticNode(node_type=NodeType.name, name=operation_name), argument_1, argument_2]
+
+    match(operation_name):
+        case "plus":
+            return [SemanticNode(NodeType.integer, integer=argument_1.integer + argument_2.integer)]
+        case "minus":
+            return [SemanticNode(NodeType.integer, integer=argument_1.integer - argument_2.integer)]
+        case "mult":
+            return [SemanticNode(NodeType.integer, integer=argument_1.integer * argument_2.integer)]
+        case "div":
+            return [SemanticNode(NodeType.integer, integer=argument_1.integer // argument_2.integer)]
 
 
-def replace_name_with_expr_in_pair(name: SemanticNode, expr: SemanticNode, pair: SemanticNode) -> SemanticNode | EvalError:
-    pair_name = pair.nodes[0]
-    pair_expr = pair.nodes[1]
+def apply_arguments_on_cond(arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
+    # print(f"{' ' * 2 * context.level}apply basic:  ", "cond")
+    # print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
+    context.increase_level()
 
-    replaced_pair_expr = replace_name_with_expr_in_expr(name, expr, pair_expr)
+    if len(arguments) != 3:
+        return EvalError(f"cond needs to have exactly 3 arguments")
 
-    if type(replaced_pair_expr) == EvalError:
-        return replaced_pair_expr
+    argument_1 = eval_basic(arguments[0], copy(environment), context=deepcopy(context))
 
-    return SemanticNode(SemanticNodeType.expr, nodes=[pair_name, replaced_pair_expr])
+    if type(argument_1) == EvalError:
+        return argument_1
+
+    if is_equivalent_to_true(argument_1):
+        result = eval_basic(arguments[1], copy(environment), context=deepcopy(context))
+    elif is_equivalent_to_false(argument_1):
+        result = eval_basic(arguments[2], copy(environment), context=deepcopy(context))
+    else:
+        return [SemanticNode(node_type=NodeType.name, name="cond"), argument_1] + arguments[1:]
+
+    if type(result) == EvalError:
+        return result
+
+    return [result]
 
 
-def replace_name_with_expr_in_expr(name: SemanticNode, expr: SemanticNode, expr1: SemanticNode) -> SemanticNode | EvalError:
-    node = expr1.nodes[0]
+def is_equivalent_to_true(basic: SemanticNode) -> bool:
+    match(basic.node_type):
+        case NodeType.integer:
+            return basic.integer != 0
+        case x if x in [NodeType.lazy_record, NodeType.eager_record]:
+            if len(basic.nodes) == 0:
+                return False
+            else:
+                return True
+        case _:
+            return False
+
+
+def is_equivalent_to_false(basic: SemanticNode) -> bool:
+    match(basic.node_type):
+        case NodeType.integer:
+            return basic.integer == 0
+        case x if x in [NodeType.lazy_record, NodeType.eager_record]:
+            if len(basic.nodes) == 0:
+                return True
+            else:
+                return False
+        case _:
+            return False
+
+
+def apply_arguments_on_expr(expr: SemanticNode, arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
+    # print(f"{' ' * 2 * context.level}apply expr:   ", expr.pretty_string())
+    # print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
+    context.increase_level()
+
+    node = expr.nodes[0]
 
     match(node.node_type):
-        case SemanticNodeType.function:
-            replaced_node = replace_name_with_expr_in_function(name, expr, node)
-        case SemanticNodeType.apply:
-            replaced_node = replace_name_with_expr_in_apply(name, expr, node)
-
-    if type(replaced_node) == EvalError:
-        return replaced_node
-
-    return SemanticNode(SemanticNodeType.expr, nodes=[replaced_node])
+        case NodeType.function:
+            return apply_arguments_on_function(node, arguments, copy(environment), context=deepcopy(context))
+        case NodeType.apply:
+            return [expr] + arguments
 
 
-def replace_name_with_expr_in_function(name: SemanticNode, expr: SemanticNode, function: SemanticNode) -> SemanticNode | EvalError:
+def apply_arguments_on_function(function: SemanticNode, arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
+    # print(f"{' ' * 2 * context.level}apply function: ", function.pretty_string())
+    # print(f"{' ' * 2 * context.level}on arguments:   ", [argument.pretty_string() for argument in arguments])
+    context.increase_level()
+
+    name = function.nodes[0]
+    expr = function.nodes[1]
+
+    argument = arguments[0]
+
+    argument = eval_basic(argument, copy(environment), context=deepcopy(context))
+
+    if type(argument) == EvalError:
+        return argument
+
+    expr = replace_name_with_basic_in_expr(name.name, argument, expr)
+
+    evaluated_expr = eval_expr(expr, copy(environment), context=deepcopy(context))
+
+    if type(evaluated_expr) == EvalError:
+        return evaluated_expr
+
+    reduced_expr = reduce_expr(evaluated_expr, context=deepcopy(context))
+
+    return eval_basics([reduced_expr] + arguments[1:], copy(environment), context=deepcopy(context))
+
+
+def apply_arguments_on_record(record: SemanticNode, arguments: list[SemanticNode], environment: Environment, context: EvalContext) -> list[SemanticNode] | EvalError:
+    # print(f"{' ' * 2 * context.level}apply record: ", record.pretty_string())
+    # print(f"{' ' * 2 * context.level}on arguments: ", [argument.pretty_string() for argument in arguments])
+    context.increase_level()
+
+    for pair in reversed(record.nodes):
+        name = pair.nodes[0]
+        expr = pair.nodes[1]
+
+        environment[name.name] = expr
+
+    # print(json.dumps({k: v.pretty_string() for k, v in environment.items()}, sort_keys=True, indent=4))
+
+    return eval_basics(arguments, copy(environment), context=deepcopy(context))
+
+
+def replace_name_with_basic_in_expr(name: str, argument: SemanticNode, expr: SemanticNode) -> SemanticNode:
+    node = expr.nodes[0]
+
+    match(node.node_type):
+        case NodeType.function:
+            node = replace_name_with_basic_in_function(name, argument, node)
+        case NodeType.apply:
+            node = replace_name_with_basic_in_apply(name, argument, node)
+
+    return SemanticNode(NodeType.expr, [node])
+
+
+def replace_name_with_basic_in_function(name: str, argument: SemanticNode, function: SemanticNode) -> SemanticNode:
     function_name = function.nodes[0]
     function_expr = function.nodes[1]
 
-    if name.name == function_name.name:
+    if name == function_name.name:
         return function
 
-    replaced_function_expr = replace_name_with_expr_in_expr(name, expr, function_expr)
+    function_expr = replace_name_with_basic_in_expr(name, argument, function_expr)
 
-    if type(replaced_function_expr) == EvalError:
-        return replaced_function_expr
-
-    return SemanticNode(SemanticNodeType.function, nodes=[function_name, replaced_function_expr])
+    return SemanticNode(NodeType.function, [function_name, function_expr])
 
 
-def replace_name_with_expr_in_apply(name: SemanticNode, expr: SemanticNode, apply: SemanticNode) -> SemanticNode | EvalError:
+def replace_name_with_basic_in_apply(name: str, argument: SemanticNode, apply: SemanticNode) -> SemanticNode:
     basics = apply.nodes
+    basics = replace_name_with_basic_in_basics(name, argument, basics)
 
-    replaced_basics = replace_name_with_expr_in_basics(name, expr, basics)
-
-    if type(replaced_basics) == EvalError:
-        return replaced_basics
-
-    return SemanticNode(SemanticNodeType.apply, nodes=replaced_basics)
+    return SemanticNode(NodeType.apply, basics)
 
 
-def replace_name_with_expr_in_basics(name: SemanticNode, expr: SemanticNode, basics: list[SemanticNode]) -> list[SemanticNode] | EvalError:
+def replace_name_with_basic_in_basics(name: str, argument: SemanticNode, basics: list[SemanticNode]) -> list[SemanticNode]:
     replaced_basics = []
 
     for basic in basics:
-        replaced_basic = replace_name_with_expr_in_basic(name, expr, basic)
-
-        if type(replaced_basic) == EvalError:
-            return replaced_basic
-
+        replaced_basic = replace_name_with_basic_in_basic(name, argument, basic)
         replaced_basics.append(replaced_basic)
 
     return replaced_basics
 
 
-def replace_name_with_expr_in_basic(name: SemanticNode, expr: SemanticNode, basic: SemanticNode) -> SemanticNode | EvalError:
-    node = basic.nodes[0]
-
-    match(node):
-        case SemanticNodeType.integer:
-            return node
-        case SemanticNodeType.name:
-            if node.name == name.name:
-                return deepcopy(expr)
+def replace_name_with_basic_in_basic(name: str, argument: SemanticNode, basic: SemanticNode) -> SemanticNode:
+    match(basic.node_type):
+        case NodeType.integer:
+            return basic
+        case NodeType.name:
+            if basic.name == name:
+                return argument
             else:
-                return node
-        case SemanticNodeType.expr:
-            return replace_name_with_expr_in_expr(name, expr, node)
-        case SemanticNodeType.lazy_record:
-            return replace_name_with_expr_in_expr(name, expr, node)
-        case SemanticNodeType.eager_record:
-            return replace_name_with_expr_in_expr(name, expr, node)
+                return basic
+        case NodeType.expr:
+            replaced_expr = replace_name_with_basic_in_expr(name, argument, basic)
+            return replaced_expr
+        case NodeType.lazy_record:
+            replaced_record = replace_name_with_basic_in_lazy_record(name, argument, basic)
+            return replaced_record
+        case NodeType.eager_record:
+            replaced_record = replace_name_with_basic_in_eager_record(name, argument, basic)
+            return replaced_record
 
 
-def replace_name_with_expr_in_lazy_record(name: SemanticNode, expr: SemanticNode, lazy_record: SemanticNode) -> SemanticNode | EvalError:
+def replace_name_with_basic_in_lazy_record(name: str, argument: SemanticNode, lazy_record: SemanticNode) -> SemanticNode:
     pairs = lazy_record.nodes
+    pairs = replace_name_with_basic_in_pairs(name, argument, pairs)
 
-    replaced_pairs = replace_name_with_expr_in_pairs(name, expr, pairs)
-
-    if type(replaced_pairs) == EvalError:
-        return replaced_pairs
-
-    return SemanticNode(SemanticNodeType.eager_record, nodes=replaced_pairs)
+    return SemanticNode(NodeType.lazy_record, pairs)
 
 
-def replace_name_with_expr_in_eager_record(name: SemanticNode, expr: SemanticNode, eager_record: SemanticNode) -> SemanticNode | EvalError:
+def replace_name_with_basic_in_eager_record(name: str, argument: SemanticNode, eager_record: SemanticNode) -> SemanticNode:
     pairs = eager_record.nodes
+    pairs = replace_name_with_basic_in_pairs(name, argument, pairs)
 
-    replaced_pairs = replace_name_with_expr_in_pairs(name, expr, pairs)
+    return SemanticNode(NodeType.eager_record, pairs)
 
-    if type(replaced_pairs) == EvalError:
-        return replaced_pairs
 
-    return SemanticNode(SemanticNodeType.eager_record, nodes=replaced_pairs)
+def replace_name_with_basic_in_pairs(name: str, argument: SemanticNode, pairs: list[SemanticNode]) -> list[SemanticNode]:
+    replaced_pairs = []
+
+    for pair in pairs:
+        replaced_pair = replace_name_with_basic_in_pair(name, argument, pair)
+        replaced_pairs.append(replaced_pair)
+
+    return replaced_pairs
+
+
+def replace_name_with_basic_in_pair(name: str, argument: SemanticNode, pair: SemanticNode) -> SemanticNode:
+    pair_name = pair.nodes[0]
+    pair_expr = pair.nodes[1]
+
+    pair_expr = replace_name_with_basic_in_expr(name, argument, pair_expr)
+
+    return SemanticNode(NodeType.pair, nodes=[pair_name, pair_expr])
 
 
 def main() -> None:
@@ -1347,13 +1568,13 @@ def main() -> None:
 
     tokens = group_characters(source_code)
     if type(tokens) is InvalidSourceCodeCharacter:
-        print(tokens)
+        print(tokens, file=sys.stderr)
         exit(1)
 
     abstract_syntax_tree = syntax_parse_tokens(tokens)
 
     if type(abstract_syntax_tree) is SyntaxParseError:
-        print(abstract_syntax_tree)
+        print(abstract_syntax_tree, file=sys.stderr)
         exit(1)
 
     semantic_context = SemanticContext(bound_names=['plus', 'minus', 'mult', 'div', 'cond'])
@@ -1361,13 +1582,21 @@ def main() -> None:
     semantic_tree = semantic_parse_expr(abstract_syntax_tree, semantic_context)
 
     if type(semantic_tree) is SemanticParseError:
-        print(semantic_tree)
+        print(semantic_tree, file=sys.stderr)
         exit(1)
 
-    result = eval_expr(semantic_tree)
+    # print(semantic_tree.pretty_string())
 
-    # print(semantic_tree)
+    evaluated_expr = eval_expr(semantic_tree)
+
+    if type(evaluated_expr) is EvalError:
+        print(evaluated_expr, file=sys.stderr)
+        exit(1)
+
+    print(evaluated_expr.pretty_string())
 
 
 if __name__ == "__main__":
+    sys.setrecursionlimit(10_000_000)
+
     main()
