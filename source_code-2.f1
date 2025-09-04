@@ -1,0 +1,11 @@
+{
+    list=c.f.x.cond (c x)
+                    [ val=x, nxt=list c f (f x) ]
+                    [] ,
+    reduce=f.x.l.cond l
+                      (f (reduce f x (l nxt)) (l val))
+                      x ,
+    range=a.b.list (x.minus b x) (x.plus 1 x) a ,
+    sum=l.reduce (x.y.plus x y) 0 l
+}
+sum (range 3 6)
